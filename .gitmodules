@@ -1,0 +1,3 @@
+[submodule "modules/MV"]
+	path = modules/MV
+	url = https://github.com/huanngzh/MV-Adapter.git
