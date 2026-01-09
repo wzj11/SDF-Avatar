@@ -37,8 +37,7 @@ class SparseSubdivideBlock3d(nn.Module):
         channels: int,
         resolution: int,
         out_channels: None,
-        # num_groups: int = 32,
-        num_groups: int = 8
+        num_groups: int = 32
     ):
         super().__init__()
         self.channels = channels
@@ -126,7 +125,7 @@ class myNet(nn.Module):
     def __init__(
             self,
             in_channels: int = 8,
-            model_channels: int = 16,
+            model_channels: int = 64,
             cond_channels: int = 512,
             zero_output=True
     ):
@@ -144,30 +143,40 @@ class myNet(nn.Module):
                         out_channels=model_channels,
                     ),
             SparseResBlock3d(
+                        model_channels,
+                        # model_channels,
+                        out_channels=model_channels,
+                    ),
+            SparseResBlock3d(
                 model_channels,
                 out_channels=model_channels,
                 downsample=True,
             )
         ])
-        # self.blocks = nn.ModuleList([
-        #     ModulatedSparseTransformerCrossBlockNoT(
-        #         model_channels,
-        #         cond_channels,
-        #         num_heads=self.num_heads,
-        #         mlp_ratio=self.mlp_ratio,
-        #         attn_mode='full',
-        #         use_checkpoint=False,
-        #         use_rope=False,
-        #         qk_rms_norm=True,
-        #         qk_rms_norm_cross=True,
-        #     )
-        #     for _ in range(1)
-        # ])
+        self.blocks = nn.ModuleList([
+            ModulatedSparseTransformerCrossBlockNoT(
+                model_channels,
+                cond_channels,
+                num_heads=self.num_heads,
+                mlp_ratio=self.mlp_ratio,
+                attn_mode='full',
+                use_checkpoint=False,
+                use_rope=False,
+                qk_rms_norm=True,
+                qk_rms_norm_cross=True,
+            )
+            for _ in range(2)
+        ])
         self.out_blocks = nn.ModuleList([
             SparseResBlock3d(
                 model_channels * 2,
                 out_channels=model_channels,
                 upsample=True,
+            ),
+            SparseResBlock3d(
+                model_channels * 2,
+                # model_channels,
+                out_channels=model_channels,
             ),
             SparseResBlock3d(
                 model_channels * 2,
@@ -200,7 +209,7 @@ class myNet(nn.Module):
         Convert the torso of the model to float32.
         """
         # self.input_blocks.apply(convert_module_to_f16)
-        # self.blocks.apply(convert_module_to_f16)
+        self.blocks.apply(convert_module_to_f16)
         # self.out_blocks.apply(convert_module_to_f16)
         self.upsample.apply(convert_module_to_f16)
         # self.out_layer.apply(convert_module_to_f16)
@@ -257,10 +266,10 @@ class myNet(nn.Module):
         # temp = torch.zeros((1, 6, 1)).to(device)
         # temp[:, 2, :] = 1.
         # temp[:, 5, :] = 1.
-        # for block in self.blocks:
-        #     h = block(h, cond)
+        for block in self.blocks:
+            h = block(h, cond)
 
-        # h = h.type(x.dtype)
+        h = h.type(x.dtype)
         for block, skip in zip(self.out_blocks, reversed(skips)):
             h = block(h.replace(torch.cat([h.feats, skip], dim=1)))
 

@@ -22,14 +22,13 @@ from trellis.modules import sparse as sp
 from pytorch3d.loss import mesh_laplacian_smoothing
 from pytorch3d.structures import Meshes
 import cv2
-from scipy.ndimage import binary_dilation,binary_fill_holes, binary_erosion
+from scipy.ndimage import binary_dilation
 from scipy.ndimage import generate_binary_structure
 import cubvh
 from trellis.modules import sparse as sp
 from trellis.representations.mesh import SparseFeatures2Mesh
 from torch.optim.lr_scheduler import StepLR, MultiStepLR, LambdaLR, CosineAnnealingWarmRestarts
 import logging
-import torch.nn.functional as F
 
 device = 'cuda:0'
 num_betas = 300
@@ -63,7 +62,7 @@ def to_device(*args, **kwargs):
 def clip_columns_grad(grad):
     # grad 形状和 param 一样 [out_features, in_features]
     g = grad.clone()
-    max_norm = 2e-5
+    max_norm = 5e-6
     # 对指定列做逐列 clip
     col_norms = g[:8].norm(dim=-1, keepdim=True)  # 每列的 L2 norm
     scale = (max_norm / (col_norms + 1e-6)).clamp(max=1.0)
@@ -96,28 +95,23 @@ def main(name):
     # from utils.utils_geo import 
     # print(OUTPUT_PATH)
     # name = '001_01'
-    inputdir = cfg['input_dir']
     os.makedirs(f'{OUTPUT_PATH}/{name}/geo', exist_ok=True)
     from src.networks_bak import myNet
+
     training_net = myNet()
     training_net.to(device)
     training_net.train()
     training_net.out_layer.weight.register_hook(clip_columns_grad)
     training_net.out_layer.bias.register_hook(clip_columns_grad)
 
-    david_normal = cv2.imread(f'{inputdir}/{name}/normals_david/{cfg["img_path"]}.png', cv2.IMREAD_UNCHANGED)
-    david_normal = cv2.cvtColor(david_normal, cv2.COLOR_BGR2RGB)
-    david_normal = torch.as_tensor(david_normal, device=device).float() / 255.
-    david_normal = david_normal.permute(2, 0, 1)
-    normal_david = torch.nn.functional.normalize(david_normal, dim=0, eps=1e-6)
-    track_path = f'{inputdir}/{name}/body_track/smplx_track.pth'
+
+    track_path = f'inputs/{name}/body_track/smplx_track.pth'
     print(track_path)
-    parse = read_png(f'{inputdir}/{name}/parsing')
+    parse = read_png(f'inputs/{name}/parsing')
 
     #TODO
     H, W = parse.shape[1:3]
-    print(f'{inputdir}/{name}/parsing/{cfg["img_path"]}.png')
-    parse = cv2.imread(f'{inputdir}/{name}/parsing/{cfg["img_path"]}.png')
+    parse = cv2.imread(f'inputs/{name}/parsing/000001.png')
     parse = parse[None]
 
     gt_mask = torch.from_numpy((parse!=0).astype(np.uint8))
@@ -160,10 +154,10 @@ def main(name):
     # exit()
 
 
-    coarse_feats = torch.load(f'{OUTPUT_PATH}/{name}/slats/feats_coarse_back.pt').to(device)
-    coarse_coords = torch.load(f'{OUTPUT_PATH}/{name}/slats/coords_coarse_back.pt').to(device)
-    feats = torch.load(f'{OUTPUT_PATH}/{name}/slats/feats_0_new.pt').to(device)
-    coords = torch.load(f'{OUTPUT_PATH}/{name}/slats/coords_0_new.pt').to(device)
+    coarse_feats = torch.load(f'outputs/{name}/slats/feats_coarse_back.pt').to(device)
+    coarse_coords = torch.load(f'outputs/{name}/slats/coords_coarse_back.pt').to(device)
+    feats = torch.load(f'outputs/{name}/slats/feats_0_new.pt').to(device)
+    coords = torch.load(f'outputs/{name}/slats/coords_0_new.pt').to(device)
 
 
     from trellis.representations.mesh import SparseFeatures2Mesh
@@ -171,15 +165,11 @@ def main(name):
 
     fp16_scale_growth = 0.0001
     log_scale = 20
-    grad_clip = AdaptiveGradClipper(max_norm=0.5, clip_percentile=95)
+    grad_clip = AdaptiveGradClipper(max_norm=0.05, clip_percentile=95)
     model_params = [p for p in training_net.parameters() if p.requires_grad]
     master_params = make_master_params(model_params)
     optimizer = torch.optim.AdamW(master_params, lr=5e-4, weight_decay=0.0)
     scheduler = StepLR(optimizer, step_size=50, gamma=0.9)
-
-    delta = torch.zeros((feats.shape[0], 53)).float().to(device).requires_grad_(True)
-    optimizer_d = torch.optim.Adam([delta], lr=1.5e-3)
-    scheduler_d = StepLR(optimizer_d, step_size=100, gamma=0.9)
 
     face_mask = torch.from_numpy(face_mask).to(device).permute(0, 3, 1, 2)
     eye_mask = torch.from_numpy(eye_mask).to(device).permute(0, 3, 1, 2)
@@ -231,23 +221,11 @@ def main(name):
             [0, math.cos(-math.pi / 4), -math.sin(-math.pi / 4), 0],
             [0, math.sin(-math.pi / 4), math.cos(-math.pi / 4), 0],
             [0, 0, 0, 1]
-        ],
-        [
-            [math.cos(-math.pi), 0, -math.sin(-math.pi), 0],
-            [0, 1, 0, 0],
-            [math.sin(-math.pi), 0, math.cos(-math.pi), 0],
-            [0, 0, 0, 1]
-        ],
-        [
-            [1, 0, 0, 0],
-            [0, math.cos(math.pi / 2), -math.sin(math.pi / 2), 0],
-            [0, math.sin(math.pi / 2), math.cos(math.pi / 2), 0],
-            [0, 0, 0, 1]
         ]
     ]).to(device)
     with torch.no_grad():
         mesh_gt = model(None, dcoords=coords, dfeats=feats, training=False, mask=sdf_mask)
-        mesh2smplx(name, mesh_gt, output_dir=OUTPUT_PATH)
+        mesh2smplx(name, mesh_gt)
         z_mean = mesh_gt.vertices[..., -1].mean().item()
         dicts_gt = render(mesh_gt, extrinsic@rotas_t, proj[0], HW=[H, W])
     
@@ -278,8 +256,6 @@ def main(name):
         mask = ~(smplx.faces > index).any(axis=-1)
         ff = smplx.faces[mask]
         p = smplx_v[0, :-1092]
-        p = smplx_v[0]
-        ff = smplx.faces
         v, f = densify(p, ff)
         # v, f = densify(smplx_v[0], smplx.faces)
 
@@ -316,18 +292,14 @@ def main(name):
         smplx_dicts = render(smplx_m, extrinsic, proj[0], HW=[H, W])
         smplx_dicts_l = render(smplx_m_local, extrinsic@rotas_t, proj[0], HW=[H, W])
         smplx_dicts_local = render(smplx_m, extrinsic@rotas_t, proj[0], HW=[H, W])
-        # print(smplx_dicts_local['normal'].shape)
-        # exit()
         dicts_gt_ = render(mesh_gt, extrinsic@rotas_t, proj[0], HW=[H, W])
 
-        local_mask = smplx_dicts_l['mask'].detach()
+        local_mask = smplx_dicts_l['mask']
         print(smplx_dicts['mask'].shape)
         local = smplx_dicts_local['mask']
     
     masks = []
     structure = generate_binary_structure(2, 1)
-
-    local_mask[0] *= face_mask[0, 0]
 
     for x in local_mask:
         masks.append(binary_dilation(x.detach().cpu().numpy(), structure=structure, iterations=4))
@@ -339,16 +311,15 @@ def main(name):
         coords=coarse_coords.to(dtype=torch.int32),
         feats=coarse_feats
     )
-    iters = 600
-    loss_dict = {}
+    iters = 300
     for epoch in range(iters + 1):
-        # zero_grad(model_params)
-        # delta = training_net(input)
-        optimizer_d.zero_grad()
+        zero_grad(model_params)
+        delta = training_net(input)
+
         # optimizer_sing.zero_grad()
         ff = torch.cat(
             [
-                feats[..., :53].detach() + delta,
+                feats[..., :53].detach() + delta.feats,
                 feats[..., 53:].detach()
             ],
             dim=-1
@@ -362,8 +333,8 @@ def main(name):
         #     sdf_n = sdf_n.reshape(-1)
         #     sdf_n = torch.from_numpy(sdf_n).to(device)
         #     sdf_mask = (sdf_n == -1)
-        mesh = model(None, dcoords=coords, dfeats=ff, training=True, mask=sdf_mask)
-        mesh2smplx(name, mesh, output_dir=OUTPUT_PATH)
+        mesh = model(None, dcoords=coords, dfeats=ff, training=False, mask=sdf_mask)
+        mesh2smplx(name, mesh)
         # distances, face_id, uvw = BVH.unsigned_distance(mesh.vertices, return_uvw=True)
         # dis_mask = torch.topk(distances, k=bvh_v.shape[0], largest=False)[1]
         # # dis_mask = distances < 0.005
@@ -392,102 +363,53 @@ def main(name):
 
         
 
-        # depth_loss_eye = 10 * l1_loss(dicts['depth'][0][eye_mask[0, 0] > 0], smplx_dicts['depth'][eye_mask[0, 0] > 0])
-        # perceptual_loss_eye = l1_loss(dicts['normal'][0][eye_mask[0] > 0], smplx_dicts['normal'][eye_mask[0] > 0])
+        depth_loss_eye = 10 * l1_loss(dicts['depth'][0][eye_mask[0, 0] > 0], smplx_dicts['depth'][eye_mask[0, 0] > 0])
+        perceptual_loss_eye = l1_loss(dicts['normal'][0][eye_mask[0] > 0], smplx_dicts['normal'][eye_mask[0] > 0])
 
-        # I_dep = torch.cat(
-        #     [
-        #         dicts['depth'][0],
-        #         smplx_dicts['depth']
-        #     ],
-        #     dim=-1
-        # )
+        I_dep = torch.cat(
+            [
+                dicts['depth'][0],
+                smplx_dicts['depth']
+            ],
+            dim=-1
+        )
         # print(dicts_gt['depth'].max())
         # print(dicts['depth'].max())
         # print(dicts['depth'].shape)
         # print(dicts['normal'].shape)
         # print(smplx_dicts['normal'].shape)
-        # I_nor = torch.cat(
-        #     [
-        #         dicts['normal'][0],
-        #         smplx_dicts['normal']
-        #     ],
-        #     dim=-1
-        # )
-        # I_dep1 = torch.cat(
-        #     [
-        #         dicts['depth'][0],
-        #         smplx_dicts['depth']
-        #     ],
-        #     dim=-1
-        # )
-        # I_nor1 = torch.cat(
-        #     [
-        #         dicts['normal'][0] * eye_mask[0],
-        #         smplx_dicts['normal'] * eye_mask[0]
-        #     ],
-        #     dim=-1
-        # )
+        I_nor = torch.cat(
+            [
+                dicts['normal'][0],
+                smplx_dicts['normal']
+            ],
+            dim=-1
+        )
+        I_dep1 = torch.cat(
+            [
+                dicts['depth'][0],
+                smplx_dicts['depth']
+            ],
+            dim=-1
+        )
+        I_nor1 = torch.cat(
+            [
+                dicts['normal'][0] * eye_mask[0],
+                smplx_dicts['normal'] * eye_mask[0]
+            ],
+            dim=-1
+        )
         # print(mesh.vertices.shape)
         # exit()
-        # meshes = Meshes(verts=[mesh.vertices], faces=[mesh.faces])
-        # loss_laplacian = mesh_laplacian_smoothing(meshes, method="uniform")
+        meshes = Meshes(verts=[mesh.vertices], faces=[mesh.faces])
+        loss_laplacian = mesh_laplacian_smoothing(meshes, method="uniform")
 
-        # depth_loss = 10 * l1_loss(dicts['depth'][0], face_mask[0, 0] * smplx_dicts['depth'] + (1 - face_mask[0, 0]) * dicts_gt['depth'][0])
-        # perceptual_loss = loss_recon(dicts['normal'][0], smplx_dicts['normal'] * face_mask[0] + (1 - face_mask[0]) * dicts_gt['normal'][0])
-        # mmask = smplx_dicts_local['mask'] != 0
+        depth_loss = 10 * l1_loss(dicts['depth'][0], face_mask[0, 0] * smplx_dicts['depth'] + (1 - face_mask[0, 0]) * dicts_gt['depth'][0])
+        perceptual_loss = loss_recon(dicts['normal'][0], smplx_dicts['normal'] * face_mask[0] + (1 - face_mask[0]) * dicts_gt['normal'][0])
+        mmask = smplx_dicts_local['mask'] != 0
         # depth_loss_local = 10 * l1_loss(dicts['depth'][1:], smplx_dicts_local['depth'] * local_mask + (1 - local_mask) * dicts_gt_['depth'][1:])
         # perceptual_loss_local = l1_loss(dicts['normal'][1:], smplx_dicts_local['normal'] * local_mask[:, None] + (1 - local_mask[:, None]) * dicts_gt_['normal'][1:])
-        # print(smplx_dicts_local['normal'][1:].shape)
-        # print(smplx_dicts_local['normal'].shape)
-        # print(local_mask[1:, None].shape)
-        # a = dicts['normal'][1:] * (1 - local_mask[1:, None])
-        # print(a.shape)
-        # print(dicts['normal'][1:].shape)
-        # exit()
-        # a = dicts['normal'][1:] * (1 - local_mask[1:, None])
-        # b = smplx_dicts_local['normal'][1:] * (1 - local_mask[1:, None])
-        # c = (1 - local_mask[1:, None]) * dicts_gt_['normal'][1:]
-        # for i in range(a.shape[0]):
-        #     cv2.imwrite(f'{OUTPUT_PATH}/{name}/objects/test_{i}.png', a[i].permute(1, 2, 0).detach().cpu().numpy()[..., ::-1] * 255.)
-        #     cv2.imwrite(f'{OUTPUT_PATH}/{name}/objects/test1_{i}.png', b[i].permute(1, 2, 0).detach().cpu().numpy()[..., ::-1] * 255.)
-        #     cv2.imwrite(f'{OUTPUT_PATH}/{name}/objects/test2_{i}.png', c[i].permute(1, 2, 0).detach().cpu().numpy()[..., ::-1] * 255.)
-
-
-        # print(a.shape)
-        # print(b.shape)
-        # exit()
-        pred_front = dicts['normal'][0]
-        gt_front = normal_david
-        dot_david = (pred_front * gt_front).sum(dim=0)
-        loss_normal_david = ((1 - dot_david.clamp(-1, 1)) * face_mask[0]).sum() / (face_mask[0].sum() + 1e-6)
-
-        loss_normal_david_ssim = loss_recon(dicts['normal'][0] * face_mask[0, None], gt_front * face_mask[0, None], lambda_ssim=3, lambda_norm=0, mask=face_mask[0, None])
-
-
-
-
-        pred = torch.nn.functional.normalize(dicts['normal'][0:-2], dim=1, eps=1e-6)
-        gt   = torch.nn.functional.normalize(smplx_dicts_local['normal'][0:-2], dim=1, eps=1e-6)
-
-        dot = (pred * gt).sum(dim=1)  # [b,h,w]
-        # dot_in = (dot * mask).sum() / (mask.sum() + 1e-6)
-        # print(dot.shape)
-        loss_local_ = ((1 - dot[:3].clamp(-1, 1)) * local_mask_dilated[0:-3]).sum() / (local_mask_dilated[0:-3].sum() + 1e-6) + 5 * ((1 - dot[3:].clamp(-1, 1)) * local_mask_dilated[-3:-2]).sum() / (local_mask_dilated[-3:-2].sum() + 1e-6)
-
-        # loss_local_ = (1 - torch.einsum('bchw, bchw -> bhw', dicts['normal'][1:-2] * local_mask_dilated[1:-2, None], smplx_dicts_local['normal'][1:-2] * local_mask_dilated[1:-2, None])).mean()
-        # perceptual_loss_local_ = 1 * loss_recon(dicts['normal'][1:-3] * local_mask_dilated[1:-3, None], smplx_dicts_local['normal'][1:-3] * local_mask_dilated[1:-3, None], lambda_ssim=5, lambda_norm=0)
-
-        z = dicts_gt_['normal']
-        for i, x in enumerate(z):
-            cv2.imwrite(f'{OUTPUT_PATH}/{name}/objects/gt_{i}.png', x.permute(1, 2, 0).detach().cpu().numpy()[..., ::-1] * 255.)
-        z = dicts['normal']
-        for i, x in enumerate(z):
-            cv2.imwrite(f'{OUTPUT_PATH}/{name}/objects/pred_{i}.png', x.permute(1, 2, 0).detach().cpu().numpy()[..., ::-1] * 255.)
-        # exit()
-        perceptual_loss_local = 1 * loss_recon((1 - local_mask[1:-2, None]) * dicts['normal'][1:-2], (1 - local_mask[1:-2, None]) * dicts_gt_['normal'][1:-2], lambda_ssim=5, lambda_norm=0, mask=(1 - local_mask[1:-2, None]))
-
-        perceptual_loss_local_back = 1 * loss_recon(dicts['normal'][-2:], dicts_gt_['normal'][-2:], lambda_ssim=5, lambda_norm=0, mask=dicts['mask'][-2:, None])
+        perceptual_loss_local = loss_recon(dicts['normal'][1:] * local_mask_dilated[1:, None], smplx_dicts_local['normal'][1:] * local_mask_dilated[1:, None]) + 0.8 * loss_recon((1 - local_mask[1:, None]) * dicts['normal'][1:], (1 - local_mask[1:, None]) * dicts_gt_['normal'][1:])
         # loss_reg = mesh.reg_loss
 
         # img_n1 = smplx_dicts_local['normal'].permute(1, 2, 0, 3).flatten(start_dim=-2).permute(1, 2, 0)
@@ -495,30 +417,13 @@ def main(name):
         # img = torch.cat([img_n1, img_n2], dim=1)
         # cv2.imwrite('src/snnwzj.png', img.detach().cpu().numpy() * 255.)
         # loss = depth_loss + 2 * perceptual_loss + 0.1 * loss_reg + 5 * depth_loss_local + 10 * perceptual_loss_local
-        # depth_loss_new = 10 * loss_recon(dicts['depth'][0, None] * local_mask_dilated[0, None], smplx_dicts_local['depth'][0, None] * local_mask_dilated[0, None]) + 5 * loss_recon((1 - local_mask)[0, None] * dicts['depth'][0, None], (1 - local_mask)[0, None] * dicts_gt_['depth'][0, None])
-        depth_loss_show = 1 * cal_l1_loss((dicts['depth'][0, None] - smplx_dicts_local['depth'][0, None]), mask=local_mask_dilated[0, None])
-        depth_loss_new = 1 * cal_l1_loss((dicts['depth'][0, None] - smplx_dicts_local['depth'][0, None]), mask=local_mask_dilated[0, None], l_type='huber')
-        depth_loss_new_dis = 0.75 * cal_l1_loss((dicts['depth'][0, None] - smplx_dicts_local['depth'][0, None]), mask=(1 - local_mask[0, None]))
+        depth_loss_new = 10 * loss_recon(dicts['depth'][0, None] * local_mask_dilated[0, None], smplx_dicts_local['depth'][0, None] * local_mask_dilated[0, None]) + 5 * loss_recon((1 - local_mask)[0, None] * dicts['depth'][0, None], (1 - local_mask)[0, None] * dicts_gt_['depth'][0, None])
 
-        depth_loss_local = 1 * cal_l1_loss((dicts['depth'][-3, None] - smplx_dicts_local['depth'][-3, None]), mask=local_mask_dilated[-3, None])
         # perceptual_loss_new = loss_recon(dicts['normal'][0], smplx_dicts_local['normal'][0] * local_mask_dilated[0, None] + (1 - local_mask[0, None]) * dicts_gt_['normal'][0]) ### 2025 11.9 22:33
-        perceptual_loss_new = 1 * loss_recon(dicts['normal'][0] * local_mask_dilated[0, None], smplx_dicts_local['normal'][0] * local_mask_dilated[0, None], lambda_ssim=3, lambda_norm=0, mask=local_mask_dilated[0, None])
-        normal_loss_local = 1 * loss_recon(dicts['normal'][1:-3] * local_mask_dilated[1:-3, None], smplx_dicts_local['normal'][1:-3] * local_mask_dilated[1:-3, None], lambda_ssim=3, lambda_norm=0, mask=local_mask_dilated[1:-3, None])
-        perceptual_loss_new_up = 1 * loss_recon(dicts['normal'][-3] * local_mask_dilated[-3, None], smplx_dicts_local['normal'][-3] * local_mask_dilated[-3, None], lambda_ssim=3, lambda_norm=0, mask=local_mask_dilated[-3, None])
-        perceptual_loss_new_dis = loss_recon(dicts['normal'][0] * (1 - local_mask[0, None]), (1 - local_mask[0, None]) * dicts_gt_['normal'][0], lambda_ssim=5, lambda_norm=0, mask=(1 - local_mask[0, None]))
-        
-        # depth_loss_new_dis = 1 * cal_l1_loss((dicts['depth'][-3, None] - smplx_dicts_local['depth'][-3, None]))
-        # loss = 10 * depth_loss + 2 * perceptual_loss + 2 * perceptual_loss_local + 1.5 * loss_laplacian
-        normal_loss = perceptual_loss_new
-        normal_loss_front = perceptual_loss_new_dis
-        # loss = 1 * normal_loss + 15 * perceptual_loss_new_dis / (1 - local_mask[0, None]).mean().detach() + 7.5 * perceptual_loss_local / (1 - local_mask[1:-2, None]).mean().detach() + 0.01 * torch.mean(torch.abs(delta)) + 10 * perceptual_loss_local_back + 0.1 * loss_local_ / (local_mask_dilated[1:-2, None]).mean().detach() + 30 * depth_loss_new
-        if epoch < 100:
-            lambda_depth = 30
-        else:
-            lambda_depth = 30
-        loss_reg = mesh.reg_loss
-        loss = 1 * normal_loss +  0.3 * normal_loss_local + 2 * normal_loss_front + 0.5 * perceptual_loss_local + 0.1 * torch.mean(torch.abs(delta)) + 0.5 * perceptual_loss_local_back + 0.1 * loss_local_ + lambda_depth * depth_loss_new + 30 * depth_loss_local + 1 * perceptual_loss_new_up + lambda_depth * depth_loss_new_dis + 2000 * loss_reg + 2 * loss_normal_david 
+        perceptual_loss_new = 10 * loss_recon(dicts['normal'][0] * local_mask_dilated[0, None], smplx_dicts_local['normal'][0] * local_mask_dilated[0, None]) + 5 * loss_recon(dicts['normal'][0] * (1 - local_mask[0, None]), (1 - local_mask[0, None]) * dicts_gt_['normal'][0])
 
+        # loss = 10 * depth_loss + 2 * perceptual_loss + 2 * perceptual_loss_local + 1.5 * loss_laplacian
+        loss = 1 * perceptual_loss_new + 0.5 * perceptual_loss_local + 0.2 * depth_loss_new
         # loss = depth_loss + 2 * perceptual_loss  + depth_loss_eye + 2 * perceptual_loss_eye
         # loss = depth_loss_eye + 2 * perceptual_loss_eye
         # loss = depth_loss + 100 * depth_loss_eye
@@ -528,82 +433,57 @@ def main(name):
         # optimizer_sing.step()
         # scheduler.step()
         # grad_norm = grad_clip([delta])
-        
+        if epoch % 5 == 0:
+            print(f'epoch: {epoch}, loss: {loss}, depth_loss: {depth_loss}')
 
         #TODO 通过mask选出smplx对应的面，然后对于侧面视角和仰视视角，渲染pred + smplx筛出的面部作为gt，因为此时面部高度重合，只是为了把接缝处处理一下
         #TODO 如果一开始面部过于偏怎么办，去掉这些例子算了
-        loss.backward()
-        grad_norm = grad_clip(delta)
 
-        optimizer_d.step()
 
-        if epoch % 5 == 0:
-            loss_dict.update({'loss': loss.item(), 'depth_loss': depth_loss_show.item(), 
-            'depth_loss_new': depth_loss_new.item(), 'normal_loss': normal_loss.item()})
-            print(f'epoch: {epoch}, loss: {loss}, depth_loss: {depth_loss_show}, depth_loss_new: {depth_loss_new},  normal_loss: {normal_loss}, local_loss: {perceptual_loss_local}, normal_loss_front: {normal_loss_front}, normal_loss_back: {perceptual_loss_local_back}, loss_local: {loss_local_}, loss_reg: {loss_reg}, loss_david: {loss_normal_david}')
-
-        # scaled_loss = loss * (2 ** log_scale)
-        # scaled_loss.backward()
+        scaled_loss = loss * (2 ** log_scale)
+        scaled_loss.backward()
 
         # print(model_params)
         # exit()
 
-        # model_grads_to_master_grads(model_params, master_params)
-        # master_params[0].grad.mul_(1.0 / (2 ** log_scale))
-        # grad_norm = grad_clip(master_params)
+        model_grads_to_master_grads(model_params, master_params)
+        master_params[0].grad.mul_(1.0 / (2 ** log_scale))
+        grad_norm = grad_clip(master_params)
 
-        # if not any(not p.grad.isfinite().all() for p in model_params):
-        #     optimizer.step()
-        #     # scheduler.step()
-        #     master_params_to_model_params(model_params, master_params)
-        #     log_scale += fp16_scale_growth
-        # else:
-        #     log_scale -= 1
-        # if epoch == 300:
-        #     mesh.vertices[..., -1:] += z_mean
-        #     trimesh.Trimesh(vertices=mesh.vertices.detach().cpu().numpy(), faces=mesh.faces.cpu().numpy()).export(f'{OUTPUT_PATH}/{name}/objects/single_300.obj')
-        #     torch.save(ff, f'{OUTPUT_PATH}/{name}/params/delta_geo_300.pt')
+        if not any(not p.grad.isfinite().all() for p in model_params):
+            optimizer.step()
+            # scheduler.step()
+            master_params_to_model_params(model_params, master_params)
+            log_scale += fp16_scale_growth
+        else:
+            log_scale -= 1
 
         if epoch == iters:
             mesh.vertices[..., -1:] += z_mean
-            trimesh.Trimesh(vertices=mesh.vertices.detach().cpu().numpy(), faces=mesh.faces.cpu().numpy()).export(f'{OUTPUT_PATH}/{name}/objects/single_show_ffhq.obj')
-            smplx_m.vertices[..., -1:] += z_mean
-            trimesh.Trimesh(vertices=smplx_m.vertices.detach().cpu().numpy(), faces=smplx_m.faces.cpu().numpy()).export(f'{OUTPUT_PATH}/{name}/objects/single_smplx.obj')
-            torch.save(ff, f'{OUTPUT_PATH}/{name}/params/delta_geo_show_ffhq.pt')
-            # cv2.imwrite(f'{OUTPUT_PATH}/{name}/objects/dd.png', I_dep.detach().cpu().numpy()[..., ::-1] * 255.)
-            # cv2.imwrite(f'{OUTPUT_PATH}/{name}/objects/nn.png', I_nor.permute(1, 2, 0).detach().cpu().numpy()[..., ::-1] * 255.)
-            # cv2.imwrite(f'{OUTPUT_PATH}/{name}/objects/dd1.png', I_dep1.detach().cpu().numpy()[..., ::-1] * 255.)
-            # cv2.imwrite(f'{OUTPUT_PATH}/{name}/objects/nn1.png', I_nor1.permute(1, 2, 0).detach().cpu().numpy()[..., ::-1] * 255.)
+            trimesh.Trimesh(vertices=mesh.vertices.detach().cpu().numpy(), faces=mesh.faces.cpu().numpy()).export(f'outputs/{name}/objects/single.obj')
+            torch.save(ff, f'outputs/{name}/params/delta_geo.pt')
+            cv2.imwrite(f'outputs/{name}/objects/dd.png', I_dep.detach().cpu().numpy()[..., ::-1] * 255.)
+            cv2.imwrite(f'outputs/{name}/objects/nn.png', I_nor.permute(1, 2, 0).detach().cpu().numpy()[..., ::-1] * 255.)
+            cv2.imwrite(f'outputs/{name}/objects/dd1.png', I_dep1.detach().cpu().numpy()[..., ::-1] * 255.)
+            cv2.imwrite(f'outputs/{name}/objects/nn1.png', I_nor1.permute(1, 2, 0).detach().cpu().numpy()[..., ::-1] * 255.)
 
 
-            # cv2.imwrite(f'{OUTPUT_PATH}/{name}/objects/local_mask.png', local_mask.permute(1, 0, 2).flatten(start_dim=1).detach().cpu().numpy() * 255.)
-            # cv2.imwrite(f'{OUTPUT_PATH}/{name}/objects/local_normal.png', ((1 - local_mask[1:, None]) * dicts_gt_['normal'][1:]).permute(1, 2, 0, 3).flatten(start_dim=2).permute(1, 2, 0).detach().cpu().numpy() * 255.)
+            cv2.imwrite(f'outputs/{name}/objects/local_mask.png', local_mask.permute(1, 0, 2).flatten(start_dim=1).detach().cpu().numpy() * 255.)
+            cv2.imwrite(f'outputs/{name}/objects/local_normal.png', ((1 - local_mask[1:, None]) * dicts_gt_['normal'][1:]).permute(1, 2, 0, 3).flatten(start_dim=2).permute(1, 2, 0).detach().cpu().numpy() * 255.)
             
         if epoch % 5 == 0:
             # n = dicts['normal']
-            cv2.imwrite(f'{OUTPUT_PATH}/{name}/geo/normal_{epoch}.png', dicts['normal'][0].permute(1, 2, 0).detach().cpu().numpy()[..., ::-1] * 255.)
+            cv2.imwrite(f'outputs/{name}/geo/normal_{epoch}.png', dicts['normal'][0].permute(1, 2, 0).detach().cpu().numpy()[..., ::-1] * 255.)
 
-        if epoch == 600:
+        if epoch == 400:
             # n = dicts['normal']
-            cv2.imwrite(f'{OUTPUT_PATH}/{name}/geo/normal_{epoch}.png', dicts['normal'][0].permute(1, 2, 0).detach().cpu().numpy()[..., ::-1] * 255.)
+            cv2.imwrite(f'outputs/{name}/geo/normal_{epoch}.png', dicts['normal'][0].permute(1, 2, 0).detach().cpu().numpy()[..., ::-1] * 255.)
 
-    return loss_dict
-
-
-def cal_l1_loss(x, mask = None, l_type='l1'):
-    if l_type == 'l1':
-        if mask is None:
-            return torch.abs(x).mean()
-        else:
-            return torch.abs(x*mask).mean() / (mask.mean() + 1e-7)
-    elif l_type == 'huber':
-        loss = F.huber_loss(x * 100, torch.zeros_like(x), reduction='none', delta=0.05)
-        
-        # 2. 处理 Mask
-        if mask is None:
-            return loss.mean()
-        else:
-            return (loss * mask).sum() / (mask.sum() + 1e-7)
+def cal_l1_loss(x, mask = None):
+    if mask is None:
+        return torch.abs(x).mean()
+    else:
+        return torch.abs(x*mask).mean() / (mask.mean() + 1e-7)
 
 def cal_depth_loss(depth_pred, depth_gt, mask, parsing_map, face_ldmks):
         height, width = depth_pred.shape[:2]
@@ -632,19 +512,16 @@ def cal_depth_loss(depth_pred, depth_gt, mask, parsing_map, face_ldmks):
                 trans = mean_pred - scale * mean_gt
                 depth_gt_aligned = depth_gt * scale + trans
         valid_mask = (mask>0.5).float()
-        # num_valid = valid_mask.sum() + 1e-8
-        # diff = (depth_pred - depth_gt_aligned) * valid_mask
-        # delta_value = 0.002
+        # delta_value = 0.1
         # huber_loss = torch.nn.functional.huber_loss(
-        #     input=diff, 
-        #     target=torch.zeros_like(diff), 
-        #     reduction='sum', 
+        #     input=depth_pred * valid_mask, 
+        #     target=depth_gt_aligned * valid_mask, 
+        #     reduction='mean', 
         #     delta=delta_value
         # )
         loss_depth = cal_l1_loss(depth_pred - depth_gt_aligned, valid_mask)
         
         # return loss_depth + 0.3 * (1 - ssim((depth_pred * valid_mask)[None], (depth_gt_aligned * valid_mask)[None]))
-        # return huber_loss / num_valid
         return loss_depth
 
 def custom_lr_lambda(epoch):
@@ -687,7 +564,7 @@ def main_daviad(name):
     # from utils.utils_geo import 
     # print(OUTPUT_PATH)
     # name = '001_01'
-    os.makedirs(f'outputs/{name}/geo', exist_ok=True)
+    os.makedirs(f'{OUTPUT_PATH}/{name}/geo', exist_ok=True)
     training_net = myNet()
     training_net.to(device)
     training_net.train()
@@ -763,16 +640,12 @@ def main_daviad(name):
 
     fp16_scale_growth = 0.0001
     log_scale = 20
-    grad_clip = AdaptiveGradClipper(max_norm=1, clip_percentile=95)
+    grad_clip = AdaptiveGradClipper(max_norm=0.05, clip_percentile=95)
     model_params = [p for p in training_net.parameters() if p.requires_grad]
     master_params = make_master_params(model_params)
-    delta = torch.zeros((feats.shape[0], 53)).float().to(device).requires_grad_(True)
-    optimizer_d = torch.optim.Adam([delta], lr=1.5e-3)
     optimizer = torch.optim.AdamW(master_params, lr=5e-4, weight_decay=0.0)
     # scheduler = LambdaLR(optimizer, lr_lambda=custom_lr_lambda)
-    scheduler = StepLR(optimizer, step_size=100, gamma=0.9)
-    scheduler_d = StepLR(optimizer_d, step_size=100, gamma=0.9)
-
+    scheduler = StepLR(optimizer, step_size=50, gamma=0.9)
     # scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=60, T_mult=1, eta_min=1e-6)
     seg_mask = torch.from_numpy(face_mask).to(device)[0, ..., 0]
     face_mask = torch.from_numpy(face_mask).to(device).permute(0, 3, 1, 2)
@@ -809,15 +682,15 @@ def main_daviad(name):
             [0, 0, 0, 1]
         ],
         [
-            [math.cos(math.pi / 2), 0, -math.sin(math.pi / 2), 0],
+            [math.cos(math.pi / 4), 0, -math.sin(math.pi / 4), 0],
             [0, 1, 0, 0],
-            [math.sin(math.pi / 2), 0, math.cos(math.pi / 2), 0],
+            [math.sin(math.pi / 4), 0, math.cos(math.pi / 4), 0],
             [0, 0, 0, 1]
         ],
         [
-            [math.cos(-math.pi / 2), 0, -math.sin(-math.pi / 2), 0],
+            [math.cos(-math.pi / 4), 0, -math.sin(-math.pi / 4), 0],
             [0, 1, 0, 0],
-            [math.sin(-math.pi / 2), 0, math.cos(-math.pi / 2), 0],
+            [math.sin(-math.pi / 4), 0, math.cos(-math.pi / 4), 0],
             [0, 0, 0, 1]
         ],
         [
@@ -914,41 +787,15 @@ def main_daviad(name):
         coords=coarse_coords.to(dtype=torch.int32),
         feats=coarse_feats
     )
-    iters = 300
-    # with torch.no_grad():
-    #     mesh_gt = model(None, dcoords=coords, dfeats=feats, training=False, mask=sdf_mask)
-    #     mesh2smplx(name, mesh_gt)
-    #     # z_mean = mesh_gt.vertices[..., -1].mean().item()
-    #     dicts_gt = render(mesh_gt, extrinsic@rotas_t, proj[0], HW=[H, W])
-    my_mask = ((dicts_gt['mask'][0].detach() * seg_mask) > 0.5).float()
-    structure = generate_binary_structure(2, 1)
-    local_reg_mask = binary_erosion(my_mask.detach().cpu().numpy(), structure=structure, iterations=2)
-    local_normal_mask = binary_erosion(my_mask.detach().cpu().numpy(), structure=structure, iterations=1)
-    
-
-    local_mask_dilated = binary_dilation(my_mask.detach().cpu().numpy(), structure=structure, iterations=1)
-    new_mask = torch.from_numpy(local_mask_dilated).to(device)
-    local_reg_mask = torch.from_numpy(local_reg_mask).to(device).float()
-    local_normal_mask = torch.from_numpy(local_normal_mask).to(device).float()
-
-    
-
+    iters = 400
     for epoch in range(iters + 1):
-        # zero_grad(model_params)
-        # delta = training_net(input)
+        zero_grad(model_params)
+        delta = training_net(input)
 
-        optimizer_d.zero_grad()
-        # ff = torch.cat(
-        #     [
-        #         feats[..., :53].detach() + delta.feats,
-        #         feats[..., 53:].detach()
-        #     ],
-        #     dim=-1
-        # ).to(device)
-        
+        # optimizer_sing.zero_grad()
         ff = torch.cat(
             [
-                feats[..., :53].detach() + delta,
+                feats[..., :53].detach() + delta.feats,
                 feats[..., 53:].detach()
             ],
             dim=-1
@@ -962,7 +809,7 @@ def main_daviad(name):
         #     sdf_n = sdf_n.reshape(-1)
         #     sdf_n = torch.from_numpy(sdf_n).to(device)
         #     sdf_mask = (sdf_n == -1)
-        mesh = model(None, dcoords=coords, dfeats=ff, training=True, mask=sdf_mask)
+        mesh = model(None, dcoords=coords, dfeats=ff, training=False, mask=sdf_mask)
         mesh2smplx(name, mesh)
         # distances, face_id, uvw = BVH.unsigned_distance(mesh.vertices, return_uvw=True)
         # dis_mask = torch.topk(distances, k=bvh_v.shape[0], largest=False)[1]
@@ -995,53 +842,48 @@ def main_daviad(name):
 
         
 
-        # depth_loss_eye = 10 * l1_loss(dicts['depth'][0][eye_mask[0, 0] > 0], smplx_dicts['depth'][eye_mask[0, 0] > 0])
-        # perceptual_loss_eye = l1_loss(dicts['normal'][0][eye_mask[0] > 0], smplx_dicts['normal'][eye_mask[0] > 0])
+        depth_loss_eye = 10 * l1_loss(dicts['depth'][0][eye_mask[0, 0] > 0], smplx_dicts['depth'][eye_mask[0, 0] > 0])
+        perceptual_loss_eye = l1_loss(dicts['normal'][0][eye_mask[0] > 0], smplx_dicts['normal'][eye_mask[0] > 0])
 
-        # I_dep = torch.cat(
-        #     [
-        #         dicts['depth'][0],
-        #         smplx_dicts['depth']
-        #     ],
-        #     dim=-1
-        # )
+        I_dep = torch.cat(
+            [
+                dicts['depth'][0],
+                smplx_dicts['depth']
+            ],
+            dim=-1
+        )
         # print(dicts_gt['depth'].max())
         # print(dicts['depth'].max())
         # print(dicts['depth'].shape)
         # print(dicts['normal'].shape)
         # print(smplx_dicts['normal'].shape)
-        # I_nor = torch.cat(
-        #     [
-        #         dicts['normal'][0],
-        #         smplx_dicts['normal']
-        #     ],
-        #     dim=-1
-        # )
-        # I_dep1 = torch.cat(
-        #     [
-        #         dicts['depth'][0],
-        #         smplx_dicts['depth']
-        #     ],
-        #     dim=-1
-        # )
-        # I_nor1 = torch.cat(
-        #     [
-        #         dicts['normal'][0] * eye_mask[0],
-        #         smplx_dicts['normal'] * eye_mask[0]
-        #     ],
-        #     dim=-1
-        # )
-        # cv2.imwrite(f'outputs/{name}/objects/nn11.png', dicts_gt['normal'][0].permute(1, 2, 0).detach().cpu().numpy()[..., ::-1] * 255.)
-        # # cv2.imwrite(f'outputs/{name}/objects/local_normal.png', dicts_gt_['normal'][1:].permute(1, 2, 0, 3).flatten(start_dim=2).permute(1, 2, 0).detach().cpu().numpy() * 255.)
-        # # cv2.imwrite(f'outputs/{name}/objects/local_normal_2.png', dicts['normal'][1:].permute(1, 2, 0, 3).flatten(start_dim=2).permute(1, 2, 0).detach().cpu().numpy() * 255.)
-        # exit()
-
+        I_nor = torch.cat(
+            [
+                dicts['normal'][0],
+                smplx_dicts['normal']
+            ],
+            dim=-1
+        )
+        I_dep1 = torch.cat(
+            [
+                dicts['depth'][0],
+                smplx_dicts['depth']
+            ],
+            dim=-1
+        )
+        I_nor1 = torch.cat(
+            [
+                dicts['normal'][0] * eye_mask[0],
+                smplx_dicts['normal'] * eye_mask[0]
+            ],
+            dim=-1
+        )
         # print(mesh.vertices.shape)
         # exit()
         # meshes = Meshes(verts=[mesh.vertices], faces=[mesh.faces])
         # loss_laplacian = mesh_laplacian_smoothing(meshes, method="uniform")
 
-        depth_loss = cal_depth_loss(dicts['depth'][0], depth_gt.clone(), local_normal_mask, parsing_map.clone(), face_ldmks.clone())
+        depth_loss = cal_depth_loss(dicts['depth'][0], depth_gt.clone(), dicts['mask'][0] * seg_mask.clone(), parsing_map.clone(), face_ldmks.clone())
         # depth_loss = 10 * l1_loss(dicts['depth'][0], face_mask[0, 0] * smplx_dicts['depth'] + (1 - face_mask[0, 0]) * dicts_gt['depth'][0])
         # perceptual_loss = loss_recon(dicts['normal'][0], smplx_dicts['normal'] * face_mask[0] + (1 - face_mask[0]) * dicts_gt['normal'][0])
         # mmask = smplx_dicts_local['mask'] != 0
@@ -1065,38 +907,20 @@ def main_daviad(name):
         # print(dicts['normal'].shape)
         # print(normal_gt.shape)
         # exit()
-        # my_mask = ((dicts['mask'][0] * seg_mask) > 0.5).float()
+        my_mask = ((dicts['mask'][0] * seg_mask) > 0.5).float()
         # normal_loss = cal_l1_loss(dicts['normal'][0] - normal_gt.permute(2, 0, 1), ((dicts['mask'][0] * seg_mask) > 0.5).float()) + 0.2 * (1 - ssim(dicts['normal'][0] * my_mask, normal_gt.permute(2, 0, 1) * my_mask))
         # loss = normal_loss
         # if epoch < 100:
         #     lambda_depth = 10
         # else:
-        if epoch < 1001:
-            lambda_depth = 10
-            lambda_ssim = 1
-            lambda_norm = 0
+        if epoch < 350:
+            lambda_depth = 6
+            lambda_ssim = 0.3
         else:
             lambda_depth = 6
-            lambda_ssim = 0.2
-            lambda_norm = 1
-        # print(new_mask.shape)
-        # exit()
-        perceptual_normal_loss = loss_recon(dicts['normal'][0] * local_normal_mask[None], normal_gt.permute(2, 0, 1) * local_normal_mask[None], lambda_ssim=8, lambda_norm=0) 
-        perceptual_normal_loss_dis = 0.3 * loss_recon(dicts['normal'][0] * (1 - local_reg_mask[None]), dicts_gt['normal'][0] * (1 - local_reg_mask[None]), lambda_ssim=3, lambda_norm=0)
-
-        pred_ = torch.nn.functional.normalize(dicts['normal'][0], dim=0, eps=1e-6)
-        gt_ = torch.nn.functional.normalize(normal_gt.permute(2, 0, 1), dim=0, eps=1e-6)
-        dot = (pred_ * gt_).sum(dim=0)
-        loss_local_ = ((1 - dot.clamp(-1, 1)) * local_normal_mask).sum() / (local_normal_mask.sum() + 1e-6)
-
-        normal_1 = loss_recon(dicts['normal'][1], dicts_gt_['normal'][1], lambda_ssim=3, lambda_norm=0)
-        normal_2 = loss_recon(dicts['normal'][2], dicts_gt_['normal'][2], lambda_ssim=3, lambda_norm=0)
-        normal_3 = loss_recon(dicts['normal'][3], dicts_gt_['normal'][3], lambda_ssim=3, lambda_norm=0)
-
-
-        reg_loss = mesh.reg_loss
-        # loss = normal_loss + lambda_depth * depth_loss  + 0.05 * normal_1 + 0.05 * normal_2 + 0.05 * normal_3
-        loss = perceptual_normal_loss + 1.5 * perceptual_normal_loss_dis + 0.3 * loss_local_ + 0.1 * torch.mean(torch.abs(delta)) + 0.5 * normal_1 + 0.5 * normal_2 + 0.25 * normal_3 + 30 * depth_loss
+            lambda_ssim = 0.3
+        normal_loss = loss_recon(dicts['normal'][0] * my_mask[None], normal_gt.permute(2, 0, 1) * my_mask[None], lambda_ssim=lambda_ssim)
+        loss = normal_loss + lambda_depth * depth_loss
         # k = normal_gt.permute(2, 0, 1) * my_mask[None]
         # k = (k / 2. + 0.5) * 255.
         # p = (dicts['normal'][0] / 2. + 0.5) * 255.
@@ -1113,32 +937,29 @@ def main_daviad(name):
         # scheduler.step()
         # grad_norm = grad_clip([delta])
         if epoch % 5 == 0:
-            print(f'epoch: {epoch}, loss: {loss}, normal_loss: {loss_local_}, depth_loss: {depth_loss}, lr: {scheduler_d.get_lr()}')
+            print(f'epoch: {epoch}, loss: {loss}, normal_loss: {normal_loss}, depth_loss: {depth_loss}, lr: {scheduler.get_lr()}')
 
         #TODO 通过mask选出smplx对应的面，然后对于侧面视角和仰视视角，渲染pred + smplx筛出的面部作为gt，因为此时面部高度重合，只是为了把接缝处处理一下
         #TODO 如果一开始面部过于偏怎么办，去掉这些例子算了
-        loss.backward()
-        # grad_norm = grad_clip([delta])
 
-        optimizer_d.step()
-        # scheduler_d.step()
-        # scaled_loss = loss * (2 ** log_scale)
-        # scaled_loss.backward()
 
-        # # # print(model_params)
-        # # # exit()
+        scaled_loss = loss * (2 ** log_scale)
+        scaled_loss.backward()
 
-        # model_grads_to_master_grads(model_params, master_params)
-        # master_params[0].grad.mul_(1.0 / (2 ** log_scale))
-        # grad_norm = grad_clip(master_params)
+        # print(model_params)
+        # exit()
 
-        # if not any(not p.grad.isfinite().all() for p in model_params):
-        #     optimizer.step()
-        #     scheduler.step()
-        #     master_params_to_model_params(model_params, master_params)
-        #     log_scale += fp16_scale_growth
-        # else:
-        #     log_scale -= 1
+        model_grads_to_master_grads(model_params, master_params)
+        master_params[0].grad.mul_(1.0 / (2 ** log_scale))
+        grad_norm = grad_clip(master_params)
+
+        if not any(not p.grad.isfinite().all() for p in model_params):
+            optimizer.step()
+            scheduler.step()
+            master_params_to_model_params(model_params, master_params)
+            log_scale += fp16_scale_growth
+        else:
+            log_scale -= 1
 
         # if epoch % 100 == 0:
         #     mesh.vertices[..., -1:] += z_mean
@@ -1146,9 +967,9 @@ def main_daviad(name):
 
         if epoch == iters:
             mesh.vertices[..., -1:] += z_mean
-            trimesh.Trimesh(vertices=mesh.vertices.detach().cpu().numpy(), faces=mesh.faces.cpu().numpy()).export(f'outputs/{name}/objects/single_show_.obj')
-            torch.save(ff, f'outputs/{name}/params/delta_geo_david_.pt')
-            # break
+            trimesh.Trimesh(vertices=mesh.vertices.detach().cpu().numpy(), faces=mesh.faces.cpu().numpy()).export(f'outputs/{name}/objects/single_david_show.obj')
+            torch.save(ff, f'outputs/{name}/params/delta_geo_david.pt')
+            break
             # cv2.imwrite(f'outputs/{name}/objects/dd.png', I_dep.detach().cpu().numpy()[..., ::-1] * 255.)
             # cv2.imwrite(f'outputs/{name}/objects/nn.png', I_nor.permute(1, 2, 0).detach().cpu().numpy()[..., ::-1] * 255.)
             # cv2.imwrite(f'outputs/{name}/objects/dd1.png', I_dep1.detach().cpu().numpy()[..., ::-1] * 255.)
@@ -1158,13 +979,13 @@ def main_daviad(name):
             # cv2.imwrite(f'outputs/{name}/objects/local_mask.png', local_mask.permute(1, 0, 2).flatten(start_dim=1).detach().cpu().numpy() * 255.)
             # cv2.imwrite(f'outputs/{name}/objects/local_normal.png', ((1 - local_mask[1:, None]) * dicts_gt_['normal'][1:]).permute(1, 2, 0, 3).flatten(start_dim=2).permute(1, 2, 0).detach().cpu().numpy() * 255.)
             
-        if epoch % 5 == 0:
-            # n = dicts['normal']
-            cv2.imwrite(f'outputs/{name}/geo/normal_{epoch}.png', dicts['normal'][0].permute(1, 2, 0).detach().cpu().numpy()[..., ::-1] * 255.)
+        # if epoch % 5 == 0:
+        #     # n = dicts['normal']
+        #     cv2.imwrite(f'outputs/{name}/geo/normal_{epoch}.png', dicts['normal'][0].permute(1, 2, 0).detach().cpu().numpy()[..., ::-1] * 255.)
 
-        if epoch == iters:
-            # n = dicts['normal']
-            cv2.imwrite(f'outputs/{name}/geo/normal_{epoch}.png', dicts['normal'][0].permute(1, 2, 0).detach().cpu().numpy()[..., ::-1] * 255.)
+        # if epoch == iters:
+        #     # n = dicts['normal']
+        #     cv2.imwrite(f'outputs/{name}/geo/normal_{epoch}.png', dicts['normal'][0].permute(1, 2, 0).detach().cpu().numpy()[..., ::-1] * 255.)
 
 
 def main_new(name):
@@ -1506,8 +1327,8 @@ def main_new(name):
             cv2.imwrite(f'outputs/{name}/geo/normal_{epoch}.png', dicts['normal'][0].permute(1, 2, 0).detach().cpu().numpy()[..., ::-1] * 255.)
 
 def smplx2mesh(name):
-    inputdir = cfg['input_dir']
-    track_path = f'{inputdir}/{name}/body_track/smplx_track.pth'
+    
+    track_path = f'inputs/{name}/body_track/smplx_track.pth'
     smplx_params = torch.load(track_path)
     cam_para, body_pose, lhand_pose, rhand_pose, jaw_pose, leye_pose, reye_pose, shape, expr, global_orient, transl = to_device(**smplx_params)
     batch_size = body_pose.shape[0]
@@ -1533,12 +1354,12 @@ def smplx2mesh(name):
     mask = ~(smplx.faces > index).any(axis=-1)
     p = output.vertices[0].detach().cpu().numpy()
     f = smplx.faces
-    trimesh.Trimesh(vertices=p, faces=f).export(f'{OUTPUT_PATH}/{name}/objects/origin_smplx.obj')
-    # f = smplx.faces[mask]
-    # p = output.vertices[0, :-1092].detach().cpu().numpy()
-    trimesh.Trimesh(vertices=p, faces=f).export(f'{OUTPUT_PATH}/{name}/objects/origin_smplx_wo_eyes.obj')
-    trans = np.load(f'{OUTPUT_PATH}/{name}/params/trans.npz')
-    kt = np.load(f'{OUTPUT_PATH}/{name}/params/kt.npz')
+    trimesh.Trimesh(vertices=p, faces=f).export(f'outputs/{name}/objects/origin_smplx.obj')
+    f = smplx.faces[mask]
+    p = output.vertices[0, :-1092].detach().cpu().numpy()
+    trimesh.Trimesh(vertices=p, faces=f).export(f'outputs/{name}/objects/origin_smplx_wo_eyes.obj')
+    trans = np.load(f'outputs/{name}/params/trans.npz')
+    kt = np.load(f'outputs/{name}/params/kt.npz')
     k, t = list(kt.values())
     s, R, T = list(trans.values())
     p = k * p + t
@@ -1547,38 +1368,31 @@ def smplx2mesh(name):
 
     p = s * p @ Rota.transpose(-2, -1).cpu().numpy() + T
     aligned_smplx = trimesh.Trimesh(vertices=p, faces=f)
-    aligned_smplx.export(f'{OUTPUT_PATH}/{name}/objects/sm.obj')
-    aligned_smplx = trimesh.load(f'{OUTPUT_PATH}/{name}/objects/sm.obj')
+    aligned_smplx.export(f'outputs/{name}/objects/sm.obj')
+    aligned_smplx = trimesh.load(f'outputs/{name}/objects/sm.obj')
     test = (f - aligned_smplx.faces).sum()
     print((p - aligned_smplx.vertices).sum())
     print(test)
 
 
-def bind_no_eye(name, mesh=None, mouth=False):
+def bind_no_eye(name, mesh=None):
     from trellis.representations.mesh import SparseFeatures2Mesh
     model = SparseFeatures2Mesh(res=256, use_color=True)
-    coords = torch.load(f'{OUTPUT_PATH}/{name}/slats/coords_0_new.pt').to(device)
-    feats = torch.load(f'{OUTPUT_PATH}/{name}/slats/feats_0_new.pt').to(device)
-    if mouth:
-        feats_n = torch.load(f'{OUTPUT_PATH}/{name}/params/delta_geo_mouth_new.pt').to(device)
-    else:
-        feats_n = torch.load(f'{OUTPUT_PATH}/{name}/params/delta_geo_new.pt').to(device)
-
+    coords = torch.load(f'outputs/{name}/slats/coords_0_new.pt').to(device)
+    feats = torch.load(f'outputs/{name}/slats/feats_0_new.pt').to(device)
+    feats_n = torch.load(f'outputs/{name}/params/delta_geo.pt').to(device)
 
     # smplx = trimesh.load(f'../../output/{name}/objects/smplx.obj')
     if mesh is None:
-        smplx = trimesh.load(f'{OUTPUT_PATH}/{name}/objects/sm.obj')
+        smplx = trimesh.load(f'outputs/{name}/objects/sm.obj')
     else:
         smplx = mesh
     input = sp.SparseTensor(
         coords=coords,
         feats=feats_n
     )
-
-    
-
     with torch.no_grad():
-        temp_d = model(None, dcoords=coords, dfeats=feats, debug=True)
+        temp_d = model(None, dcoords=coords, dfeats=feats_n, debug=True)
         sdf_d = temp_d.reshape((257, 257, 257))
         sdf_d = sdf_d.detach().cpu().numpy()
         sdf_mask = wzj_final(
@@ -1589,7 +1403,7 @@ def bind_no_eye(name, mesh=None, mouth=False):
         sdf_mask = torch.from_numpy(sdf_mask).to(device)
 
     with torch.no_grad():
-        temp_d = model(None, dcoords=coords, dfeats=feats, debug=True)
+        temp_d = model(None, dcoords=coords, dfeats=feats_n, debug=True)
 
         temp_d[sdf_mask] *= -1
         sdf_d = temp_d.reshape((257, 257, 257))
@@ -1601,7 +1415,7 @@ def bind_no_eye(name, mesh=None, mouth=False):
         sdf_mask1 = torch.from_numpy(sdf_mask1).to(device)
         print(sdf_mask1.sum())
     sdf_mask = sdf_mask | sdf_mask1
-    output = model(input, return_v_a=True, mask=sdf_mask, name=name, output_path=OUTPUT_PATH)
+    output = model(input, return_v_a=True, mask=sdf_mask, name=name)
     # trimesh.Trimesh(vertices=output.vertices.detach().cpu().numpy(), faces=output.faces.detach().cpu().numpy()).export('src/tutils/sm_.obj')
     if hasattr(output, 'v_p'):
         print(output.v_p.shape)
@@ -1610,7 +1424,7 @@ def bind_no_eye(name, mesh=None, mouth=False):
     BVH = cubvh.cuBVH(torch.from_numpy(smplx.vertices).to(device), torch.from_numpy(smplx.faces).to(device=device, dtype=torch.int32))
     distance, face_id, uvw = BVH.unsigned_distance(v_p, return_uvw=True)
     # np.savez(f'../../output/{name}/slats/motion_sdf.npz', face_id=face_id.detach().cpu().numpy(), uvw=uvw.detach().cpu().numpy())
-    np.savez(f'{OUTPUT_PATH}/{name}/slats/motion_sdf.npz', face_id=face_id.detach().cpu().numpy(), uvw=uvw.detach().cpu().numpy())
+    np.savez(f'outputs/{name}/slats/motion_sdf.npz', face_id=face_id.detach().cpu().numpy(), uvw=uvw.detach().cpu().numpy())
 
 
 def filter_z(mesh, mean):
@@ -1633,19 +1447,11 @@ def filter_z(mesh, mean):
 
 def mouth(name):
     
-
-    from src.networks_bak import myNet
-    training_net = myNet()
-    training_net.to(device)
-    training_net.train()
-    training_net.out_layer.weight.register_hook(clip_columns_grad)
-    training_net.out_layer.bias.register_hook(clip_columns_grad)
-    inputdir = cfg['input_dir']
-    parse = read_png(f'{inputdir}/{name}/parsing')
-    parse = cv2.imread(f'{inputdir}/{name}/parsing/{cfg["img_path"]}.png')
+    parse = read_png(f'inputs/{name}/parsing')
+    parse = cv2.imread(f'inputs/{name}/parsing/000001.png')
     parse = parse[None]
     H, W = parse.shape[1:3]
-    track_path = f'{inputdir}/{name}/body_track/smplx_track.pth'
+    track_path = f'inputs/{name}/body_track/smplx_track.pth'
     smplx_params = torch.load(track_path)
     cam_para, body_pose, lhand_pose, rhand_pose, jaw_pose, leye_pose, reye_pose, shape, expr, global_orient, transl = to_device(**smplx_params)
     batch_size = body_pose.shape[0]
@@ -1699,24 +1505,10 @@ def mouth(name):
         )
     smplx_v = output['vertices'].detach().cpu().numpy()
     vv = smplx_v[-1]
-    import utils3d
-    from utils3d.torch import matrix_to_quaternion, quaternion_to_matrix
-    s, R, T, k, t = mesh2smplx(name, return_=True)
-    s = s.cpu().numpy()
-    # R = R.cpu().numpy()
-    T = T.cpu().numpy()
-    k = k.cpu().numpy()
-    t = t.cpu().numpy()
-    vv_new = k * smplx_v[0] + t
-    Rota = R[0]
-    print(Rota)
-    vv_new = s * vv_new @ Rota.transpose(-2, -1).cpu().numpy() + T
-    m_new = trimesh.Trimesh(vertices=vv_new, faces=smplx.faces)
     m = trimesh.Trimesh(vertices=vv, faces=smplx.faces)
     sub = np.load('params/mouth.npy')
     sub_1 = np.load('params/smplx_faces_no_eye.npy')
     sub_m = m.submesh([sub])[0]
-    sub_m_new = m_new.submesh([sub])[0]
     new_sub_m = m.submesh([sub_1])[0]
     # sub_m.export('src/filter/mouth.obj')
 
@@ -1725,24 +1517,25 @@ def mouth(name):
     # trellis_v = torch.from_numpy(trellis.vertices).to(device)
     # trellis_f = torch.from_numpy(trellis.faces).to(device)
     
-    
+    import utils3d
+    from utils3d.torch import matrix_to_quaternion, quaternion_to_matrix
 
     # utils3d.io.write_ply('src/filter/mouth.ply', points.detach().cpu().numpy())
     # l = trellis_mask.nonzero().flatten().cpu().numpy()
     
     # trellis.submesh([l])[0].export('src/filter/filtered.obj')
 
-    motion = np.load(f'{OUTPUT_PATH}/{name}/slats/motion_sdf.npz')
+    motion = np.load(f'outputs/{name}/slats/motion_sdf.npz')
     face_id = motion['face_id']
     uvw = motion['uvw']
     index = output.vertices.shape[1] - 1092
     mask = ~(smplx.faces > index).any(axis=-1)
-    ff = smplx.faces
+    ff = smplx.faces[mask]
     motion_id = ff[face_id]
-    deformation = (smplx_v[-1:] - smplx_v[0:1])
+    deformation = (smplx_v - smplx_v[0:1])[:, :-1092]
     deformation = deformation[:, motion_id, :]
-    trans = np.load(f'{OUTPUT_PATH}/{name}/params/trans.npz')
-    kt = np.load(f'{OUTPUT_PATH}/{name}/params/kt.npz')
+    trans = np.load(f'outputs/{name}/params/trans.npz')
+    kt = np.load(f'outputs/{name}/params/kt.npz')
     k, t = list(kt.values())
     s, R, T = list(trans.values())
     s = torch.from_numpy(s).to(device)
@@ -1753,20 +1546,19 @@ def mouth(name):
     deformation = np.einsum('bkij, bki->bkj', deformation, np.tile(uvw, (deformation.shape[0], 1, 1)))
     deformation = s.cpu().numpy() * k.cpu().numpy() * deformation @ R[0].transpose(-2, -1).cpu().numpy()
     print(deformation[-1].shape)
-    path = f'{OUTPUT_PATH}/{name}/params/v_pos_i.pt'
+    path = f'outputs/{name}/params/v_pos_i.pt'
     p = torch.load(path)
     new_p = (p).detach().cpu().numpy() + deformation[-1]
     # utils3d.io.write_ply('src/filter/cubes.ply', (p).detach().cpu().numpy() + deformation[15])
     # print(p.shape)
     # exit()
-    indices = torch.load(f'{OUTPUT_PATH}/{name}/params/marching.pt')
+    indices = torch.load(f'outputs/{name}/params/marching.pt')
     my_p = new_p[indices.detach().cpu().numpy()].reshape(-1, 8, 3).mean(axis=1)
     my_p = (my_p - T.cpu().numpy()) @ R[0].cpu().numpy() / s[0].cpu().numpy()
     my_p = (my_p - t.cpu().numpy()) / k.cpu().numpy()
     # utils3d.io.write_ply('src/filter/coords.ply', my_p)
 
     BVH1 = cubvh.cuBVH(torch.from_numpy(sub_m.vertices).to(device), torch.from_numpy(sub_m.faces).to(device))
-    BVH_n = cubvh.cuBVH(torch.from_numpy(sub_m_new.vertices).to(device), torch.from_numpy(sub_m_new.faces).to(device))
     BVH2 = cubvh.cuBVH(torch.from_numpy(vv).to(device), torch.from_numpy(smplx.faces).to(device))
 
     sub_mm = new_sub_m.vertices.copy()
@@ -1783,18 +1575,7 @@ def mouth(name):
 
     my_pp = my_p.clone()
     my_pp[..., 2] = 0
-    coords = torch.load(f'{OUTPUT_PATH}/{name}/slats/coords_0_new.pt').to(device)
-    coord = ((coords + 0.5) / 256) - 0.5
-    print(coord.shape)
-    print(coord[:5])
-    dis_c, face_id_c, uvw_c = BVH_n.unsigned_distance(coord[..., 1:], True)
-    mmma = dis_c < 0.08
-    v_show = coord[..., 1:][mmma].cpu().numpy()
-    utils3d.io.write_ply('hello.ply', v_show)
-    # print(v_show.shape)
-    # print(sub_m_new.vertices.min())
-    # print(sub_m_new.vertices.max())
-    # exit()
+
     dis, face_id, uvw = BVH1.unsigned_distance(my_p, True)
     dis1, face_id1, uvw1 = BVH2.unsigned_distance(my_p, True)
     dis2, face_id2, uvw2 = BVH3.unsigned_distance(my_pp, True)
@@ -1807,29 +1588,14 @@ def mouth(name):
     mm = (mask & mask1 & mask_x & mask_y & mask2)
     points = my_p[~mm]
 
-    torch.save(mm, f'{OUTPUT_PATH}/{name}/params/marching_mask.pt')
+    torch.save(mm, f'outputs/{name}/params/marching_mask.pt')
 
-    
-    feats_n = torch.load(f'{OUTPUT_PATH}/{name}/slats/feats_0_new.pt').to(device)
-
-    feats = torch.load(f'{OUTPUT_PATH}/{name}/params/delta_geo_new.pt').to(device)
+    coords = torch.load(f'outputs/{name}/slats/coords_0_new.pt').to(device)
+    feats = torch.load(f'outputs/{name}/params/delta_geo.pt').to(device)
     model = SparseFeatures2Mesh(res=256)
 
-
-    fp16_scale_growth = 0.0001
-    log_scale = 20
-    grad_clip = AdaptiveGradClipper(max_norm=0.5, clip_percentile=95)
-    model_params = [p for p in training_net.parameters() if p.requires_grad]
-    master_params = make_master_params(model_params)
-    optimizer = torch.optim.AdamW(master_params, lr=5e-4, weight_decay=0.0)
-    scheduler = StepLR(optimizer, step_size=50, gamma=0.9)
-
-    delta = torch.zeros((feats.shape[0], 53)).float().to(device).requires_grad_(True)
-    optimizer_d = torch.optim.Adam([delta], lr=5e-4)
-    scheduler_d = StepLR(optimizer_d, step_size=100, gamma=0.9)
-
     with torch.no_grad():
-        temp_d = model(None, dcoords=coords, dfeats=feats_n, debug=True)
+        temp_d = model(None, dcoords=coords, dfeats=feats, debug=True)
         sdf_d = temp_d.reshape((257, 257, 257))
         sdf_d = sdf_d.detach().cpu().numpy()
         sdf_mask = wzj_final(
@@ -1840,7 +1606,7 @@ def mouth(name):
         sdf_mask = torch.from_numpy(sdf_mask).to(device)
 
     with torch.no_grad():
-        temp_d = model(None, dcoords=coords, dfeats=feats_n, debug=True)
+        temp_d = model(None, dcoords=coords, dfeats=feats, debug=True)
 
         temp_d[sdf_mask] *= -1
         sdf_d = temp_d.reshape((257, 257, 257))
@@ -1852,68 +1618,12 @@ def mouth(name):
         sdf_mask1 = torch.from_numpy(sdf_mask1).to(device)
         print(sdf_mask1.sum())
     sdf_mask = sdf_mask | sdf_mask1
-    n_coords = torch.load(f'{OUTPUT_PATH}/{name}/params/v_pos_.pt').to(coords)
-    m_mask = torch.load(f'{OUTPUT_PATH}/{name}/params/marching_mask.pt').to(device)
+    n_coords = torch.load(f'outputs/{name}/params/v_pos_.pt').to(coords)
+    m_mask = torch.load(f'outputs/{name}/params/marching_mask.pt').to(device)
     
-    mesh = model(None, dcoords=coords, dfeats=feats, mask=sdf_mask, n_coords=n_coords, marching_mask=m_mask, change_marching=True, name=name, output_path=OUTPUT_PATH)
+    mesh = model(None, dcoords=coords, dfeats=feats, mask=sdf_mask, n_coords=n_coords, marching_mask=m_mask, change_marching=True, name=name)
 
-    rotas_t = torch.Tensor([
-        [
-            [1, 0, 0, 0],
-            [0, 1, 0, 0],
-            [0, 0, 1, 0],
-            [0, 0, 0, 1]
-        ],
-        [
-            [math.cos(math.pi / 4), 0, -math.sin(math.pi / 4), 0],
-            [0, 1, 0, 0],
-            [math.sin(math.pi / 4), 0, math.cos(math.pi / 4), 0],
-            [0, 0, 0, 1]
-        ],
-        [
-            [math.cos(-math.pi / 4), 0, -math.sin(-math.pi / 4), 0],
-            [0, 1, 0, 0],
-            [math.sin(-math.pi / 4), 0, math.cos(-math.pi / 4), 0],
-            [0, 0, 0, 1]
-        ],
-        [
-            [1, 0, 0, 0],
-            [0, math.cos(-math.pi / 4), -math.sin(-math.pi / 4), 0],
-            [0, math.sin(-math.pi / 4), math.cos(-math.pi / 4), 0],
-            [0, 0, 0, 1]
-        ]
-    ]).to(device)
-
-    rotas = torch.Tensor([
-        [
-            [math.cos(math.pi / 4), 0, -math.sin(math.pi / 4), 0],
-            [0, 1, 0, 0],
-            [math.sin(math.pi / 4), 0, math.cos(math.pi / 4), 0],
-            [0, 0, 0, 1]
-        ],
-        [
-            [math.cos(-math.pi / 4), 0, -math.sin(-math.pi / 4), 0],
-            [0, 1, 0, 0],
-            [math.sin(-math.pi / 4), 0, math.cos(-math.pi / 4), 0],
-            [0, 0, 0, 1]
-        ],
-        [
-            [1, 0, 0, 0],
-            [0, math.cos(-math.pi / 4), -math.sin(-math.pi / 4), 0],
-            [0, math.sin(-math.pi / 4), math.cos(-math.pi / 4), 0],
-            [0, 0, 0, 1]
-        ]
-    ]).to(device)
-
-    # return
-
-    # with torch.no_grad():
-    #     mesh_gt = model(None, dcoords=coords, dfeats=feats, training=False, mask=sdf_mask)
-    #     mesh2smplx(name, mesh_gt)
-    #     z_mean = mesh_gt.vertices[..., -1].mean().item()
-    #     dicts_gt = render(mesh_gt, extrinsic@rotas_t, proj[0], HW=[H, W])
-
-    
+    return
     proj = get_ndc_proj_matrix(cam_para[0:1], [H, W])
     extrinsic = torch.tensor(
         [
@@ -1924,7 +1634,7 @@ def mouth(name):
         ]
     ).to(device)
     v, f = densify(smplx_v[-1], smplx.faces)
-    mouth_detailed = np.load('params/mouth_detailed_.npy')
+    mouth_detailed = np.load('params/mouth_detailed.npy')
     head_detailed = np.load('params/head.npy')
     head_de = trimesh.Trimesh(vertices=v, faces=f).submesh([head_detailed])[0]
     mouth_de = trimesh.Trimesh(vertices=v, faces=f).submesh([mouth_detailed])[0]
@@ -1940,398 +1650,27 @@ def mouth(name):
     out = smplx_dicts['normal']
 
     local_mask = smplx_dicts['mask']
-
-    # masks = []
-    structure = generate_binary_structure(2, 1)
-    # for x in local_mask:
-    #     masks.append(binary_dilation(x.detach().cpu().numpy(), structure=structure, iterations=4))
-    local_mask_filled = binary_fill_holes(local_mask.detach().cpu().numpy())
-    # cv2.imwrite(f'{OUTPUT_PATH}/{name}/objects/mask_filled.png', local_mask_filled.astype(np.float32) * 255.)
-    # exit()
-    
-    local_mask_filled = torch.from_numpy(local_mask_filled).to(local_mask)
-
-    local_mask_dilated = binary_dilation(local_mask_filled.detach().cpu().numpy(), structure=structure, iterations=4)
-    # local_mask_dilated = binary_dilation(local_mask.detach().cpu().numpy(), structure=structure, iterations=1)
-    local_mask_dilated = torch.from_numpy(local_mask_dilated).to(local_mask)
     print(out.shape)
-    cv2.imwrite('mouth.png', out.permute(1, 2, 0).detach().cpu().numpy()[..., ::-1] * 255.)
+    cv2.imwrite('mouth.png', out.permute(1, 2, 0).detach().cpu().numpy() * 255.)
     
     model = SparseFeatures2Mesh(res=256)
-    coarse_feats = torch.load(f'{OUTPUT_PATH}/{name}/slats/feats_coarse_back.pt').to(device)
-    coarse_coords = torch.load(f'{OUTPUT_PATH}/{name}/slats/coords_coarse_back.pt').to(device)
-    feats = torch.load(f'{OUTPUT_PATH}/{name}/slats/feats_0_new.pt').to(device)
-    coords = torch.load(f'{OUTPUT_PATH}/{name}/slats/coords_0_new.pt').to(device)
-    coords = torch.load(f'{OUTPUT_PATH}/{name}/slats/coords_0_new.pt').to(device)
-    feats_n = torch.load(f'{OUTPUT_PATH}/{name}/slats/feats_0_new.pt').to(device)
-    feats = torch.load(f'{OUTPUT_PATH}/{name}/params/delta_geo_new.pt').to(device)
+    coords = torch.load(f'outputs/{name}/slats/coords_0_new.pt').to(device)
+    feats_n = torch.load(f'outputs/{name}/slats/feats_0_new.pt').to(device)
+    feats = torch.load(f'outputs/{name}/params/delta_geo.pt').to(device)
     input = sp.SparseTensor(
         coords=coords,
         feats=feats
     )
-    motion = np.load(f'{OUTPUT_PATH}/{name}/slats/motion_sdf.npz')
+    motion = np.load(f'outputs/{name}/slats/motion_sdf.npz')
     face_id = motion['face_id']
     uvw = motion['uvw']
 
-    deformation = (smplx_v[-1:] - smplx_v[0:1])
+    deformation = (smplx_v - smplx_v[0:1])[:, :-1092]
     deformation = deformation[:, motion_id, :]
     deformation = np.einsum('bkij, bki->bkj', deformation, np.tile(uvw, (deformation.shape[0], 1, 1)))
 
-    # with torch.no_grad():
-    #     temp_d = model(None, dcoords=coords, dfeats=feats, debug=True)
-    #     sdf_d = temp_d.reshape((257, 257, 257))
-    #     sdf_d = sdf_d.detach().cpu().numpy()
-    #     sdf_mask = wzj_final(
-    #         sdf_d,
-    #     )
-    #     # exit()
-    #     sdf_mask = sdf_mask.reshape(-1)
-    #     sdf_mask = torch.from_numpy(sdf_mask).to(device)
-
-    # with torch.no_grad():
-    #     temp_d = model(None, dcoords=coords, dfeats=feats, debug=True)
-
-    #     temp_d[sdf_mask] *= -1
-    #     sdf_d = temp_d.reshape((257, 257, 257))
-    #     sdf_d = sdf_d.detach().cpu().numpy()
-    #     sdf_mask1 = wzj_final(
-    #         sdf_d,
-    #     )
-    #     sdf_mask1 = sdf_mask1.reshape(-1)
-    #     sdf_mask1 = torch.from_numpy(sdf_mask1).to(device)
-    #     print(sdf_mask1.sum())
-    # sdf_mask = sdf_mask | sdf_mask1
-
-
-    trans = np.load(f'{OUTPUT_PATH}/{name}/params/trans.npz')
-    kt = np.load(f'{OUTPUT_PATH}/{name}/params/kt.npz')
-    k, t = list(kt.values())
-    s, R, T = list(trans.values())
-    s = torch.from_numpy(s).to(device)
-    R = quaternion_to_matrix(torch.from_numpy(R).to(device))
-    T = torch.from_numpy(T).to(device)
-    k = torch.from_numpy(k).to(device)
-    t = torch.from_numpy(t).to(device)
-    # R = quaternion_to_matrix(torch.from_numpy(R).to(device))
-    deformation = s.cpu().numpy() * k.cpu().numpy() * deformation @ R[0].transpose(-2, -1).cpu().numpy()
-
-    n_coords = torch.load(f'{OUTPUT_PATH}/{name}/params/v_pos_.pt').to(coords)
-    m_mask = torch.load(f'{OUTPUT_PATH}/{name}/params/marching_mask.pt').to(device)
-    mesh = model(None, dcoords=coords, dfeats=feats, v_a=torch.from_numpy(deformation[-1]).to(dtype=torch.float32, device=device), mask=sdf_mask, n_coords=n_coords, marching_mask=m_mask, change_marching=True, name=name, output_path=OUTPUT_PATH)
-    mesh.vertices = (mesh.vertices - T) @ R[0] / s[0]
-    mesh.vertices = (mesh.vertices - t) / k
-    mesh.face_normal = torch.matmul(mesh.face_normal, R)
-    mesh_out = render(mesh, extrinsic, proj[0], HW=[H, W])
-    out = mesh_out['normal']
-    print(out.shape)
-    cv2.imwrite('mesh.png', out.permute(1, 2, 0).detach().cpu().numpy() * 255.)
-
-    input = sp.SparseTensor(
-        coords=coarse_coords.to(dtype=torch.int32),
-        feats=coarse_feats
-    )
-    iters = 200
-
-    
-
-    # iters = 501
-    # delta = torch.zeros((feats.shape[0], 8)).to(device).requires_grad_(True)
-    # optimizer = Adam([delta], lr=5e-5)
-
-    os.makedirs(f'{OUTPUT_PATH}/{name}/mouth', exist_ok=True)
-    indices = torch.load(f'{OUTPUT_PATH}/{name}/params/indices.pt')
-    BCE = torch.nn.BCELoss()
-    # grad_clip = AdaptiveGradClipper(max_norm=0.01, clip_percentile=95)
-
     with torch.no_grad():
-        mesh_gt = model(None, dcoords=coords, dfeats=feats, v_a=torch.from_numpy(deformation[-1]).to(dtype=torch.float32, device=device), mask=sdf_mask, n_coords=n_coords, marching_mask=m_mask, indices=indices)
-        mesh2smplx(name, mesh_gt)
-        z_mean = mesh_gt.vertices[..., -1].mean().item()
-        dicts_gt = render(mesh, extrinsic, proj[0], HW=[H, W])
-
-    smplx_mesh = trimesh.Trimesh(vertices=v, faces=f)
-    my_mesh = trimesh.Trimesh(vertices=mesh_gt.vertices.detach().cpu().numpy(), faces=mesh.faces.detach().cpu().numpy())
-    # smplx_mesh.export(f'{OUTPUT_PATH}/{name}/objects/smplx_mouth_use.obj')
-    # my_mesh.export(f'{OUTPUT_PATH}/{name}/objects/my_mouth_use.obj')
-    BVH_op = cubvh.cuBVH(smplx_m.vertices, smplx_m.faces.to(torch.int32))
-    v_sm = smplx_m.vertices.clone()
-    v_sm[..., 2] = 0
-    BVH_mm = cubvh.cuBVH(v_sm, smplx_m.faces.to(torch.int32))
-    distance, face_id, uvw = BVH_op.unsigned_distance(mesh_gt.vertices, return_uvw=True)
-    x_gt = mesh_gt.vertices.clone()
-    x_gt[..., 2] = 0
-    distance1, _, _ = BVH_mm.unsigned_distance(x_gt, return_uvw=True)
-    msk = distance < 0.02
-    msk1 = distance1 < 0.005
-    msk = (msk & msk1)
-    out_p = mesh_gt.vertices[msk].detach().cpu().numpy()
-    utils3d.io.write_ply(f'{OUTPUT_PATH}/{name}/objects/my_mouth.ply', out_p)
-
-    delta_mesh = torch.zeros((msk.shape[0], 3)).to(device).requires_grad_(True)
-    optimizer_m = torch.optim.Adam([delta_mesh], lr=5e-4)
-    scheduler_m = StepLR(optimizer_m, step_size=100, gamma=0.9)
-
-    exit()
-    
-    
-    for epoch in range(iters + 1):
-        # optimizer.zero_grad()
-        optimizer_d.zero_grad()
-        # zero_grad(model_params)
-        # delta = training_net(input)
-        ff = torch.cat(
-            [
-                feats[..., :53].detach() + delta * mmma[..., None],
-                feats[..., 53:].detach()
-            ],
-            dim=-1
-        ).to(device)
-        # ff = torch.zeros(*feats.shape).to(device).requires_grad_(True)
-        # ff[mmma][..., :53] = feats[mmma][..., :53].detach() + delta
-        # ff[~mmma] = feats[~mmma].detach()
-        mesh = model(None, dcoords=coords, dfeats=ff, v_a=torch.from_numpy(deformation[-1]).to(dtype=torch.float32, device=device), mask=sdf_mask, n_coords=n_coords, marching_mask=m_mask, indices=indices)
-
-        mesh2smplx(name, mesh)
-        new_v, new_f = filter_z(mesh, mean_z)
-        mesh = MeshExtractResult(vertices=new_v, faces=new_f)
-        dicts = render(mesh, extrinsic, proj[0], HW=[H, W])
-
-        # perceptual_loss_new = 10 * loss_recon(dicts['normal'][0] * local_mask_dilated[0, None], smplx_dicts_local['normal'][0] * local_mask_dilated[0, None]) + 5 * loss_recon(dicts['normal'][0] * (1 - local_mask[0, None]), (1 - local_mask[0, None]) * dicts_gt_['normal'][0])
-        perceptual_loss = loss_recon(dicts['normal'] * local_mask_dilated[None], smplx_dicts['normal'] * local_mask_dilated[None], lambda_ssim=8)
-        pred = torch.nn.functional.normalize(dicts['normal'], dim=0, eps=1e-6)
-        gt = torch.nn.functional.normalize(smplx_dicts['normal'], dim=0, eps=1e-6)
-        dot = (pred * gt).sum(dim=0)
-        loss_normal = ((1 - dot.clamp(-1, 1)) * local_mask_dilated).sum() / (local_mask_dilated.sum() + 1e-6)
-        perceptual_loss_local = 20 * loss_recon((1 - local_mask_filled)[None] * dicts['normal'], (1 - local_mask_filled)[None] * dicts_gt['normal'], lambda_ssim=3, lambda_norm=0)
-
-        depth_loss = cal_l1_loss((dicts['depth'][None] - smplx_dicts['depth'][None]), mask=local_mask_dilated[None])
-
-        # mask_loss = loss_recon(dicts['mask'] * local_mask, smplx_dicts['mask'] * local_mask)
-        # cv2.imwrite(f'{OUTPUT_PATH}/{name}/objects/mouth_mask.png', local_mask_dilated.detach().cpu().numpy() * 255.)
-        # exit()
-        # mask_loss = 5 * BCE(dicts['mask'] * local_mask_filled, smplx_dicts['mask'] * local_mask_filled) + 0.5 * dice_loss(dicts['mask'] * local_mask_filled, smplx_dicts['mask'] * local_mask_filled)
-        # loss = perceptual_loss + 0.5 * depth_loss + 0.5 * mask_loss + perceptual_loss_local
-        loss =  perceptual_loss + 8 * perceptual_loss_local + loss_normal
-
-        loss.backward()
-        # print(delta.grad)
-        grad_norm = grad_clip(delta)
-
-        optimizer_d.step()
-
-        # scaled_loss = loss * (2 ** log_scale)
-        # scaled_loss.backward()
-
-        # # print(model_params)
-        # # exit()
-
-        # model_grads_to_master_grads(model_params, master_params)
-        # master_params[0].grad.mul_(1.0 / (2 ** log_scale))
-        # grad_norm = grad_clip(master_params)
-
-        # if not any(not p.grad.isfinite().all() for p in model_params):
-        #     optimizer.step()
-        #     # scheduler.step()
-        #     master_params_to_model_params(model_params, master_params)
-        #     log_scale += fp16_scale_growth
-        # else:
-        #     log_scale -= 1
-        # loss.backward()
-        # grad_norm = grad_clip(delta)
-        # optimizer.step()
-        print(f'epoch: {epoch}, loss: {loss}, perceptual_loss: {perceptual_loss}, depth_loss: {depth_loss}, normal: {loss_normal}')
-
-        if epoch == iters:
-            # mesh.vertices[..., -1:] += z_mean
-            # trimesh.Trimesh(vertices=mesh.vertices.detach().cpu().numpy(), faces=mesh.faces.cpu().numpy()).export(f'{OUTPUT_PATH}/{name}/objects/single_n.obj')
-            torch.save(ff, f'{OUTPUT_PATH}/{name}/params/delta_geo_mouth_new.pt')
-            # cv2.imwrite(f'exp/{mname}/objects/dd.png', I_dep.detach().cpu().numpy()[..., ::-1] * 255.)
-            # cv2.imwrite(f'exp/{mname}/objects/nn.png', I_nor.permute(1, 2, 0).detach().cpu().numpy()[..., ::-1] * 255.)
-            # cv2.imwrite(f'exp/{mname}/objects/dd1.png', I_dep1.detach().cpu().numpy()[..., ::-1] * 255.)
-            # cv2.imwrite(f'exp/{mname}/objects/nn1.png', I_nor1.permute(1, 2, 0).detach().cpu().numpy()[..., ::-1] * 255.)
-
-
-            # cv2.imwrite(f'exp/{mname}/objects/local_mask.png', local_mask_dilated.permute(1, 0, 2).flatten(start_dim=1).detach().cpu().numpy() * 255.)
-            # cv2.imwrite(f'exp/{mname}/objects/local_normal.png', ((1 - local_mask_dilated[:, None]) * dicts_gt_['normal']).permute(1, 2, 0, 3).flatten(start_dim=2).permute(1, 2, 0).detach().cpu().numpy() * 255.)
-        if epoch % 5 == 0:
-        # if epoch == 100:
-        # if epoch == 200:
-            # n = dicts['normal']
-            cv2.imwrite(f'{OUTPUT_PATH}/{name}/mouth/normal_{epoch}.png', dicts['normal'].permute(1, 2, 0).detach().cpu().numpy()[..., ::-1] * 255.)
-
-
-
-
-
-def process(name):
-    
-
-    from src.networks_bak import myNet
-    training_net = myNet()
-    training_net.to(device)
-    training_net.train()
-    training_net.out_layer.weight.register_hook(clip_columns_grad)
-    training_net.out_layer.bias.register_hook(clip_columns_grad)
-    inputdir = cfg['input_dir']
-    parse = read_png(f'{inputdir}/{name}/parsing')
-    parse = cv2.imread(f'{inputdir}/{name}/parsing/{cfg["img_path"]}.png')
-    parse = parse[None]
-    H, W = parse.shape[1:3]
-    track_path = f'{inputdir}/{name}/body_track/smplx_track.pth'
-    smplx_params = torch.load(track_path)
-    cam_para, body_pose, lhand_pose, rhand_pose, jaw_pose, leye_pose, reye_pose, shape, expr, global_orient, transl = to_device(**smplx_params)
-    batch_size = body_pose.shape[0]
-    lhand_pose = smplx.left_hand_pose.expand(batch_size, -1)
-    rhand_pose = smplx.right_hand_pose.expand(batch_size, -1)
-    leye_pose = smplx.leye_pose.expand(batch_size, -1)
-    reye_pose = smplx.reye_pose.expand(batch_size, -1)
-
-    shape1 = shape[0:1].clone()
-    jaw_pose1 = torch.tensor(
-        [
-            [0.4, 0., 0.]
-        ]
-    ).to(shape)
-    lhand_pose1 = lhand_pose[0:1].clone()
-    rhand_pose1 = rhand_pose[0:1].clone()
-    leye_pose1 = leye_pose[0:1].clone()
-    reye_pose1 = reye_pose[0:1].clone()
-    expr1 = expr[0:1].clone()
-    # body_pose1 = body_pose[0:1].clone()
-    body_pose1 = torch.zeros_like(body_pose[0:1])
-    # global_orient1 = global_orient[0:1].clone()
-    global_orient1 = torch.zeros_like(global_orient[0:1])
-    transl1 = transl[0:1].clone()
-
-    shape = torch.cat([shape, shape1], dim=0)
-    jaw_pose = torch.cat([jaw_pose, jaw_pose1], dim=0)
-    lhand_pose = torch.cat([lhand_pose, lhand_pose1], dim=0)
-    rhand_pose = torch.cat([rhand_pose, rhand_pose1], dim=0)
-    leye_pose = torch.cat([leye_pose, leye_pose1], dim=0)
-    reye_pose = torch.cat([reye_pose, reye_pose1], dim=0)
-    expr = torch.cat([expr, expr1], dim=0)
-    body_pose = torch.cat([body_pose, body_pose1], dim=0)
-    global_orient = torch.cat([global_orient, global_orient1], dim=0)
-    transl = torch.cat([transl, transl1], dim=0)
-
-
-
-    output = smplx.forward(
-            betas=shape,
-            jaw_pose=jaw_pose,
-            left_hand_pose=lhand_pose,
-            right_hand_pose=rhand_pose,
-            leye_pose=leye_pose,
-            reye_pose=reye_pose,
-            expression=expr,
-            body_pose=body_pose,
-            global_orient=global_orient,
-            transl=transl,
-            with_rott_return=True
-        )
-    smplx_v = output['vertices'].detach().cpu().numpy()
-    vv = smplx_v[-1]
-    m = trimesh.Trimesh(vertices=vv, faces=smplx.faces)
-    sub = np.load('params/mouth.npy')
-    sub_1 = np.load('params/smplx_faces_no_eye.npy')
-    sub_m = m.submesh([sub])[0]
-    new_sub_m = m.submesh([sub_1])[0]
-    # sub_m.export('src/filter/mouth.obj')
-
-    
-    # trellis = trimesh.load(f'exp/{name}/objects/mouth_22.obj')
-    # trellis_v = torch.from_numpy(trellis.vertices).to(device)
-    # trellis_f = torch.from_numpy(trellis.faces).to(device)
-    
-    import utils3d
-    from utils3d.torch import matrix_to_quaternion, quaternion_to_matrix
-
-    # utils3d.io.write_ply('src/filter/mouth.ply', points.detach().cpu().numpy())
-    # l = trellis_mask.nonzero().flatten().cpu().numpy()
-    
-    # trellis.submesh([l])[0].export('src/filter/filtered.obj')
-
-    motion = np.load(f'{OUTPUT_PATH}/{name}/slats/motion_sdf.npz')
-    face_id = motion['face_id']
-    uvw = motion['uvw']
-    index = output.vertices.shape[1] - 1092
-    mask = ~(smplx.faces > index).any(axis=-1)
-    ff = smplx.faces
-    motion_id = ff[face_id]
-    deformation = (smplx_v[-1:] - smplx_v[0:1])
-    deformation = deformation[:, motion_id, :]
-    trans = np.load(f'{OUTPUT_PATH}/{name}/params/trans.npz')
-    kt = np.load(f'{OUTPUT_PATH}/{name}/params/kt.npz')
-    k, t = list(kt.values())
-    s, R, T = list(trans.values())
-    s = torch.from_numpy(s).to(device)
-    R = quaternion_to_matrix(torch.from_numpy(R).to(device))
-    T = torch.from_numpy(T).to(device)
-    k = torch.from_numpy(k).to(device)
-    t = torch.from_numpy(t).to(device)
-    deformation = np.einsum('bkij, bki->bkj', deformation, np.tile(uvw, (deformation.shape[0], 1, 1)))
-    deformation = s.cpu().numpy() * k.cpu().numpy() * deformation @ R[0].transpose(-2, -1).cpu().numpy()
-    print(deformation[-1].shape)
-    path = f'{OUTPUT_PATH}/{name}/params/v_pos_i.pt'
-    p = torch.load(path)
-    new_p = (p).detach().cpu().numpy() + deformation[-1]
-    # utils3d.io.write_ply('src/filter/cubes.ply', (p).detach().cpu().numpy() + deformation[15])
-    # print(p.shape)
-    # exit()
-    indices = torch.load(f'{OUTPUT_PATH}/{name}/params/marching.pt')
-    my_p = new_p[indices.detach().cpu().numpy()].reshape(-1, 8, 3).mean(axis=1)
-    my_p = (my_p - T.cpu().numpy()) @ R[0].cpu().numpy() / s[0].cpu().numpy()
-    my_p = (my_p - t.cpu().numpy()) / k.cpu().numpy()
-    # utils3d.io.write_ply('src/filter/coords.ply', my_p)
-
-    BVH1 = cubvh.cuBVH(torch.from_numpy(sub_m.vertices).to(device), torch.from_numpy(sub_m.faces).to(device))
-    BVH2 = cubvh.cuBVH(torch.from_numpy(vv).to(device), torch.from_numpy(smplx.faces).to(device))
-
-    sub_mm = new_sub_m.vertices.copy()
-    sub_mm[..., 2] = 0
-    BVH3 = cubvh.cuBVH(torch.from_numpy(sub_mm).to(device), torch.from_numpy(new_sub_m.faces).to(device))
-
-
-    x_min = sub_m.vertices[..., 0].min()
-    x_max = sub_m.vertices[..., 0].max()
-    y_min = sub_m.vertices[..., 1].min()
-    y_max = sub_m.vertices[..., 1].max()
-
-    my_p = torch.from_numpy(my_p).to(device)
-
-    my_pp = my_p.clone()
-    my_pp[..., 2] = 0
-
-    dis, face_id, uvw = BVH1.unsigned_distance(my_p, True)
-    dis1, face_id1, uvw1 = BVH2.unsigned_distance(my_p, True)
-    dis2, face_id2, uvw2 = BVH3.unsigned_distance(my_pp, True)
-
-    mask1 = (dis1 > 0.001)
-    mask = (dis < 0.05)
-    mask2 = (dis2 > 0.001)
-    mask_x = ((my_p[..., 0] > x_min) & (my_p[..., 0] < x_max))
-    mask_y = ((my_p[..., 1] > y_min) & (my_p[..., 1] < y_max))
-    mm = (mask & mask1 & mask_x & mask_y & mask2)
-    points = my_p[~mm]
-
-    torch.save(mm, f'{OUTPUT_PATH}/{name}/params/marching_mask.pt')
-
-    coords = torch.load(f'{OUTPUT_PATH}/{name}/slats/coords_0_new.pt').to(device)
-    feats_n = torch.load(f'{OUTPUT_PATH}/{name}/slats/feats_0_new.pt').to(device)
-    feats = torch.load(f'{OUTPUT_PATH}/{name}/params/delta_geo_mouth_new.pt').to(device)
-    model = SparseFeatures2Mesh(res=256)
-
-
-    fp16_scale_growth = 0.0001
-    log_scale = 20
-    grad_clip = AdaptiveGradClipper(max_norm=0.05, clip_percentile=95)
-    model_params = [p for p in training_net.parameters() if p.requires_grad]
-    master_params = make_master_params(model_params)
-    optimizer = torch.optim.AdamW(master_params, lr=5e-4, weight_decay=0.0)
-    scheduler = StepLR(optimizer, step_size=50, gamma=0.9)
-
-    with torch.no_grad():
-        temp_d = model(None, dcoords=coords, dfeats=feats_n, debug=True)
+        temp_d = model(None, dcoords=coords, dfeats=feats, debug=True)
         sdf_d = temp_d.reshape((257, 257, 257))
         sdf_d = sdf_d.detach().cpu().numpy()
         sdf_mask = wzj_final(
@@ -2342,7 +1681,7 @@ def process(name):
         sdf_mask = torch.from_numpy(sdf_mask).to(device)
 
     with torch.no_grad():
-        temp_d = model(None, dcoords=coords, dfeats=feats_n, debug=True)
+        temp_d = model(None, dcoords=coords, dfeats=feats, debug=True)
 
         temp_d[sdf_mask] *= -1
         sdf_d = temp_d.reshape((257, 257, 257))
@@ -2354,10 +1693,87 @@ def process(name):
         sdf_mask1 = torch.from_numpy(sdf_mask1).to(device)
         print(sdf_mask1.sum())
     sdf_mask = sdf_mask | sdf_mask1
-    n_coords = torch.load(f'{OUTPUT_PATH}/{name}/params/v_pos_.pt').to(coords)
-    # m_mask = torch.load(f'{OUTPUT_PATH}/{name}/params/marching_mask.pt').to(device)
-    
-    mesh = model(None, dcoords=coords, dfeats=feats, mask=sdf_mask, n_coords=n_coords, marching_mask=mm, change_marching=True, name=name, output_path=OUTPUT_PATH)
+
+
+    trans = np.load(f'outputs/{name}/params/trans.npz')
+    kt = np.load(f'outputs/{name}/params/kt.npz')
+    k, t = list(kt.values())
+    s, R, T = list(trans.values())
+    s = torch.from_numpy(s).to(device)
+    R = quaternion_to_matrix(torch.from_numpy(R).to(device))
+    T = torch.from_numpy(T).to(device)
+    k = torch.from_numpy(k).to(device)
+    t = torch.from_numpy(t).to(device)
+    # R = quaternion_to_matrix(torch.from_numpy(R).to(device))
+    deformation = s.cpu().numpy() * k.cpu().numpy() * deformation @ R[0].transpose(-2, -1).cpu().numpy()
+
+    n_coords = torch.load(f'outputs/{name}/params/v_pos_.pt').to(coords)
+    m_mask = torch.load(f'outputs/{name}/params/marching_mask.pt').to(device)
+    mesh = model(None, dcoords=coords, dfeats=feats, v_a=torch.from_numpy(deformation[-1]).to(dtype=torch.float32, device=device), mask=sdf_mask, n_coords=n_coords, marching_mask=m_mask, change_marching=True, name=name)
+    mesh.vertices = (mesh.vertices - T) @ R[0] / s[0]
+    mesh.vertices = (mesh.vertices - t) / k
+    mesh.face_normal = torch.matmul(mesh.face_normal, R)
+    mesh_out = render(mesh, extrinsic, proj[0], HW=[H, W])
+    out = mesh_out['normal']
+    print(out.shape)
+    cv2.imwrite('mesh.png', out.permute(1, 2, 0).detach().cpu().numpy() * 255.)
+
+
+    iters = 501
+    delta = torch.zeros((feats.shape[0], 8)).to(device).requires_grad_(True)
+    optimizer = Adam([delta], lr=5e-5)
+
+    os.makedirs(f'outputs/{name}/mouth', exist_ok=True)
+    indices = torch.load(f'outputs/{name}/params/indices.pt')
+    BCE = torch.nn.BCELoss()
+    grad_clip = AdaptiveGradClipper(max_norm=0.01, clip_percentile=95)
+
+    for epoch in range(iters):
+        optimizer.zero_grad()
+        ff = torch.cat(
+            [
+                feats[..., :8].detach() + delta,
+                feats[..., 8:].detach()
+            ],
+            dim=-1
+        ).to(device)
+        mesh = model(None, dcoords=coords, dfeats=ff, v_a=torch.from_numpy(deformation[-1]).to(dtype=torch.float32, device=device), mask=sdf_mask, n_coords=n_coords, marching_mask=m_mask, indices=indices)
+
+        mesh2smplx(name, mesh)
+        new_v, new_f = filter_z(mesh, mean_z)
+        mesh = MeshExtractResult(vertices=new_v, faces=new_f)
+        dicts = render(mesh, extrinsic, proj[0], HW=[H, W])
+
+        # perceptual_loss_new = 10 * loss_recon(dicts['normal'][0] * local_mask_dilated[0, None], smplx_dicts_local['normal'][0] * local_mask_dilated[0, None]) + 5 * loss_recon(dicts['normal'][0] * (1 - local_mask[0, None]), (1 - local_mask[0, None]) * dicts_gt_['normal'][0])
+        perceptual_loss = loss_recon(dicts['normal'] * local_mask[None], smplx_dicts['normal'] * local_mask[None])
+        depth_loss = loss_recon(dicts['depth'][None] * local_mask[None], smplx_dicts['depth'][None] * local_mask[None])
+
+        # mask_loss = loss_recon(dicts['mask'] * local_mask, smplx_dicts['mask'] * local_mask)
+        mask_loss = 5 * BCE(dicts['mask'] * local_mask, smplx_dicts['mask'] * local_mask) + 0.5 * dice_loss(dicts['mask'] * local_mask, smplx_dicts['mask'] * local_mask)
+        loss = perceptual_loss + 0.1 * depth_loss + 0.001 * mask_loss
+
+
+        loss.backward()
+        grad_norm = grad_clip(delta)
+        optimizer.step()
+        print(f'epoch: {epoch}, loss: {loss}')
+
+        if epoch == 200:
+            # mesh.vertices[..., -1:] += z_mean
+            trimesh.Trimesh(vertices=mesh.vertices.detach().cpu().numpy(), faces=mesh.faces.cpu().numpy()).export(f'outputs/{name}/objects/single_n.obj')
+            # torch.save(ff, f'exp/{mname}/params/delta_geo.pt')
+            # cv2.imwrite(f'exp/{mname}/objects/dd.png', I_dep.detach().cpu().numpy()[..., ::-1] * 255.)
+            # cv2.imwrite(f'exp/{mname}/objects/nn.png', I_nor.permute(1, 2, 0).detach().cpu().numpy()[..., ::-1] * 255.)
+            # cv2.imwrite(f'exp/{mname}/objects/dd1.png', I_dep1.detach().cpu().numpy()[..., ::-1] * 255.)
+            # cv2.imwrite(f'exp/{mname}/objects/nn1.png', I_nor1.permute(1, 2, 0).detach().cpu().numpy()[..., ::-1] * 255.)
+
+
+            # cv2.imwrite(f'exp/{mname}/objects/local_mask.png', local_mask_dilated.permute(1, 0, 2).flatten(start_dim=1).detach().cpu().numpy() * 255.)
+            # cv2.imwrite(f'exp/{mname}/objects/local_normal.png', ((1 - local_mask_dilated[:, None]) * dicts_gt_['normal']).permute(1, 2, 0, 3).flatten(start_dim=2).permute(1, 2, 0).detach().cpu().numpy() * 255.)
+        if epoch % 5 == 0:
+        # if epoch == 200:
+            # n = dicts['normal']
+            cv2.imwrite(f'outputs/{name}/mouth/normal_{epoch}.png', dicts['normal'].permute(1, 2, 0).detach().cpu().numpy()[..., ::-1] * 255.)
 
 class OnlyInfo(logging.Filter):
     def filter(self, record):
@@ -2366,61 +1782,8 @@ class OnlyInfo(logging.Filter):
 import subprocess
 from datetime import datetime
 
-name_list = ['287', '290', '294', '285', '283', '282', '274', '262', '259', '253', '249', '248', '247', '240', '239', '238', '232', '227', '223', '220', '216', '212', '200', '199', '188', '179', '165', '149', '140', '139', '128', '115', '112', '108', '106', '104', '098', '083', '076', '075', '074', '071', '060', '055', '040', '036', '031', '030', '290', '294', '301', '306', '307', '313', '314', '315', '318', '319', '320', '326', '331', '371']
-
-# print('wzj')
-
-FaceVerse = ['007_21',
-              '008_16', 
-            #   '009_11', 
-              '012_13', 
-              '014_13', 
-              '016_06'
-              ]
-
-ffhq = ['00000-00320.png', '00000-00502.png', '00000-00454.png', '00000-00447.png', '00000-00437.png', '00000-00348.png', '00000-00320.png', '00000-00247.png', '00000-00188.png', '00000-00145.png', '00000-00114.png', '00000-00040.png', '00000-00012.png']
-
-ffhq = ['00000-00320.png', '00000-00502.png', '00000-00454.png' , '00000-00437.png', '00000-00247.png', '00000-00114.png', '00000-00012.png', '00000-00145.png']
 
 if __name__ == '__main__':
-    # for name in ffhq:
-    #     main('00000-00502.png')
-    exit()
-    # name = '012_13'
-    # main_daviad('012_13')
-    # exit()
-    # for name in FaceVerse:
-    #     main_daviad(name)
-    # main_daviad(name)
-    # exit()
-    # name = 'nersemble_vids_314.mp4'
-    # smplx2mesh(name)
-    # bind_no_eye(name)
-    # mouth(name)
-    # # main(name)
-    # exit()
-    # # l = main(name)
-    # # exit()
-    # # logger.info("loss_dict=%s", l)
-    # smplx2mesh(name)
-    # bind_no_eye(name)
-    # mouth(name)
-    # bind_no_eye(name, mouth=True)
-    # process(name)
-    # exit()
-    # # main(name)
-    # # exit()
-    # smplx2mesh(name)
-    # bind_no_eye(name)
-    # mouth(name)
-    # bind_no_eye(name)
-    # process(name)
-    # exit()
-    # mouth(name)
-    # smplx2mesh(name)
-    # bind_no_eye(name)
-    # process(name)
-    # exit()
     # main('pipe')
     # exit()
     # subprocess.run(['rm', '-f', 'info_geo.log'])
@@ -2457,26 +1820,18 @@ if __name__ == '__main__':
     logger.addHandler(info_handler)
     logger.addHandler(error_handler)
 
-    # paths = os.listdir('input_ffhq')
-    paths = ffhq
-    # paths = ['nersemble_vids_' + name + '.mp4' for name in name_list]
+    paths = os.listdir('outputs')
 
     for path in paths:
-        if os.path.exists(f'outputs_ffhq/{path}/objects/single_new___.obj'):
+        if os.path.exists(f'outputs/{path}/objects/single_david_show.obj'):
             logger.info(f'{path} has been processed')
             # exit()
             continue
-        if os.path.exists(f'outputs_ffhq/{path}/objects/new_outer_filtered.obj'):
+        if os.path.exists(f'outputs/{path}/objects/new_outer_filtered.obj'):
             # print(path)
             try:
                 print(f'processing {path}')
-                l = main(path)
-                logger.info("loss_dict=%s", l)
-                # smplx2mesh(path)
-                # bind_no_eye(path)
-                # mouth(path)
-                # bind_no_eye(path, mouth=True)
-                # process(path)
+                main_daviad(path)
                 logger.info(f'{path} has been processed')
             except Exception as e:
                 logger.error(

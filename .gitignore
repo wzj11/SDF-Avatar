@@ -1,0 +1,10 @@
+*.obj
+*.pt
+*.log
+*.err
+*.png
+*.jpg
+.show_render
+.vscode
+*.tar.gz
+*.zip
