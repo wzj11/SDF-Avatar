@@ -1,0 +1,3 @@
+input_dir: input_ffhq
+output_dir: outputs_ffhq
+img_path: '000000'

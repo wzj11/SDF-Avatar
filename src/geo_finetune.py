@@ -105,11 +105,11 @@ def main(name):
     training_net.out_layer.weight.register_hook(clip_columns_grad)
     training_net.out_layer.bias.register_hook(clip_columns_grad)
 
-    david_normal = cv2.imread(f'{inputdir}/{name}/normals_david/{cfg["img_path"]}.png', cv2.IMREAD_UNCHANGED)
-    david_normal = cv2.cvtColor(david_normal, cv2.COLOR_BGR2RGB)
-    david_normal = torch.as_tensor(david_normal, device=device).float() / 255.
-    david_normal = david_normal.permute(2, 0, 1)
-    normal_david = torch.nn.functional.normalize(david_normal, dim=0, eps=1e-6)
+    # david_normal = cv2.imread(f'{inputdir}/{name}/normals_david/{cfg["img_path"]}.png', cv2.IMREAD_UNCHANGED)
+    # david_normal = cv2.cvtColor(david_normal, cv2.COLOR_BGR2RGB)
+    # david_normal = torch.as_tensor(david_normal, device=device).float() / 255.
+    # david_normal = david_normal.permute(2, 0, 1)
+    # normal_david = torch.nn.functional.normalize(david_normal, dim=0, eps=1e-6)
     track_path = f'{inputdir}/{name}/body_track/smplx_track.pth'
     print(track_path)
     parse = read_png(f'{inputdir}/{name}/parsing')
@@ -457,12 +457,12 @@ def main(name):
         # print(a.shape)
         # print(b.shape)
         # exit()
-        pred_front = dicts['normal'][0]
-        gt_front = normal_david
-        dot_david = (pred_front * gt_front).sum(dim=0)
-        loss_normal_david = ((1 - dot_david.clamp(-1, 1)) * face_mask[0]).sum() / (face_mask[0].sum() + 1e-6)
+        # pred_front = dicts['normal'][0]
+        # gt_front = normal_david
+        # dot_david = (pred_front * gt_front).sum(dim=0)
+        # loss_normal_david = ((1 - dot_david.clamp(-1, 1)) * face_mask[0]).sum() / (face_mask[0].sum() + 1e-6)
 
-        loss_normal_david_ssim = loss_recon(dicts['normal'][0] * face_mask[0, None], gt_front * face_mask[0, None], lambda_ssim=3, lambda_norm=0, mask=face_mask[0, None])
+        # loss_normal_david_ssim = loss_recon(dicts['normal'][0] * face_mask[0, None], gt_front * face_mask[0, None], lambda_ssim=3, lambda_norm=0, mask=face_mask[0, None])
 
 
 
@@ -517,7 +517,7 @@ def main(name):
         else:
             lambda_depth = 30
         loss_reg = mesh.reg_loss
-        loss = 1 * normal_loss +  0.3 * normal_loss_local + 2 * normal_loss_front + 0.5 * perceptual_loss_local + 0.1 * torch.mean(torch.abs(delta)) + 0.5 * perceptual_loss_local_back + 0.1 * loss_local_ + lambda_depth * depth_loss_new + 30 * depth_loss_local + 1 * perceptual_loss_new_up + lambda_depth * depth_loss_new_dis + 2000 * loss_reg + 2 * loss_normal_david 
+        loss = 1 * normal_loss +  0.3 * normal_loss_local + 2 * normal_loss_front + 0.5 * perceptual_loss_local + 0.1 * torch.mean(torch.abs(delta)) + 0.5 * perceptual_loss_local_back + 0.1 * loss_local_ + lambda_depth * depth_loss_new + 30 * depth_loss_local + 1 * perceptual_loss_new_up + lambda_depth * depth_loss_new_dis + 2000 * loss_reg 
 
         # loss = depth_loss + 2 * perceptual_loss  + depth_loss_eye + 2 * perceptual_loss_eye
         # loss = depth_loss_eye + 2 * perceptual_loss_eye
@@ -540,7 +540,7 @@ def main(name):
         if epoch % 5 == 0:
             loss_dict.update({'loss': loss.item(), 'depth_loss': depth_loss_show.item(), 
             'depth_loss_new': depth_loss_new.item(), 'normal_loss': normal_loss.item()})
-            print(f'epoch: {epoch}, loss: {loss}, depth_loss: {depth_loss_show}, depth_loss_new: {depth_loss_new},  normal_loss: {normal_loss}, local_loss: {perceptual_loss_local}, normal_loss_front: {normal_loss_front}, normal_loss_back: {perceptual_loss_local_back}, loss_local: {loss_local_}, loss_reg: {loss_reg}, loss_david: {loss_normal_david}')
+            print(f'epoch: {epoch}, loss: {loss}, depth_loss: {depth_loss_show}, depth_loss_new: {depth_loss_new},  normal_loss: {normal_loss}, local_loss: {perceptual_loss_local}, normal_loss_front: {normal_loss_front}, normal_loss_back: {perceptual_loss_local_back}, loss_local: {loss_local_}, loss_reg: {loss_reg}')
 
         # scaled_loss = loss * (2 ** log_scale)
         # scaled_loss.backward()
@@ -559,10 +559,10 @@ def main(name):
         #     log_scale += fp16_scale_growth
         # else:
         #     log_scale -= 1
-        # if epoch == 300:
-        #     mesh.vertices[..., -1:] += z_mean
-        #     trimesh.Trimesh(vertices=mesh.vertices.detach().cpu().numpy(), faces=mesh.faces.cpu().numpy()).export(f'{OUTPUT_PATH}/{name}/objects/single_300.obj')
-        #     torch.save(ff, f'{OUTPUT_PATH}/{name}/params/delta_geo_300.pt')
+        if epoch == 300:
+            mesh.vertices[..., -1:] += z_mean
+            trimesh.Trimesh(vertices=mesh.vertices.detach().cpu().numpy(), faces=mesh.faces.cpu().numpy()).export(f'{OUTPUT_PATH}/{name}/objects/single_300.obj')
+            torch.save(ff, f'{OUTPUT_PATH}/{name}/params/delta_geo_300.pt')
 
         if epoch == iters:
             mesh.vertices[..., -1:] += z_mean
@@ -2383,6 +2383,7 @@ ffhq = ['00000-00320.png', '00000-00502.png', '00000-00454.png', '00000-00447.pn
 ffhq = ['00000-00320.png', '00000-00502.png', '00000-00454.png' , '00000-00437.png', '00000-00247.png', '00000-00114.png', '00000-00012.png', '00000-00145.png']
 
 if __name__ == '__main__':
+    main('celebvhq_vids_1CKEXvHN9es_2.mp4')
     # for name in ffhq:
     #     main('00000-00502.png')
     exit()

@@ -1,0 +1,3 @@
+input_dir: inputs_track
+output_dir: outputs_track
+img_path: '000001'

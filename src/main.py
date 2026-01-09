@@ -2579,8 +2579,8 @@ class OnlyInfo(logging.Filter):
 if __name__ == '__main__':
     # print(cfg['input_dir'])
     # name = 'nersemble_vids_200.mp4'
-    # main('00000-00437.png')
-    # exit()
+    main('celebvhq_vids_1CKEXvHN9es_2.mp4')
+    exit()
     # main(name)
     # exit()
     # cfg['input_dir'] = 'inputs_track'
