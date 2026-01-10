@@ -19,7 +19,7 @@ import math
 import trimesh
 from trellis.representations import MeshExtractResult
 from trellis.modules import sparse as sp
-from pytorch3d.loss import mesh_laplacian_smoothing
+from pytorch3d.loss import mesh_laplacian_smoothing, mesh_normal_consistency
 from pytorch3d.structures import Meshes
 import cv2
 from scipy.ndimage import binary_dilation,binary_fill_holes, binary_erosion
@@ -139,8 +139,8 @@ def main(name):
     batch_size = body_pose.shape[0]
     lhand_pose = smplx.left_hand_pose.expand(batch_size, -1)
     rhand_pose = smplx.right_hand_pose.expand(batch_size, -1)
-    leye_pose = smplx.leye_pose.expand(batch_size, -1)
-    reye_pose = smplx.reye_pose.expand(batch_size, -1)
+    # leye_pose = smplx.leye_pose.expand(batch_size, -1)
+    # reye_pose = smplx.reye_pose.expand(batch_size, -1)
     output = smplx.forward(
             betas=shape,
             jaw_pose=jaw_pose,
@@ -478,12 +478,12 @@ def main(name):
         # loss_local_ = (1 - torch.einsum('bchw, bchw -> bhw', dicts['normal'][1:-2] * local_mask_dilated[1:-2, None], smplx_dicts_local['normal'][1:-2] * local_mask_dilated[1:-2, None])).mean()
         # perceptual_loss_local_ = 1 * loss_recon(dicts['normal'][1:-3] * local_mask_dilated[1:-3, None], smplx_dicts_local['normal'][1:-3] * local_mask_dilated[1:-3, None], lambda_ssim=5, lambda_norm=0)
 
-        z = dicts_gt_['normal']
-        for i, x in enumerate(z):
-            cv2.imwrite(f'{OUTPUT_PATH}/{name}/objects/gt_{i}.png', x.permute(1, 2, 0).detach().cpu().numpy()[..., ::-1] * 255.)
-        z = dicts['normal']
-        for i, x in enumerate(z):
-            cv2.imwrite(f'{OUTPUT_PATH}/{name}/objects/pred_{i}.png', x.permute(1, 2, 0).detach().cpu().numpy()[..., ::-1] * 255.)
+        # z = dicts_gt_['normal']
+        # for i, x in enumerate(z):
+        #     cv2.imwrite(f'{OUTPUT_PATH}/{name}/objects/gt_{i}.png', x.permute(1, 2, 0).detach().cpu().numpy()[..., ::-1] * 255.)
+        # z = dicts['normal']
+        # for i, x in enumerate(z):
+        #     cv2.imwrite(f'{OUTPUT_PATH}/{name}/objects/pred_{i}.png', x.permute(1, 2, 0).detach().cpu().numpy()[..., ::-1] * 255.)
         # exit()
         perceptual_loss_local = 1 * loss_recon((1 - local_mask[1:-2, None]) * dicts['normal'][1:-2], (1 - local_mask[1:-2, None]) * dicts_gt_['normal'][1:-2], lambda_ssim=5, lambda_norm=0, mask=(1 - local_mask[1:-2, None]))
 
@@ -731,8 +731,8 @@ def main_daviad(name):
     batch_size = body_pose.shape[0]
     lhand_pose = smplx.left_hand_pose.expand(batch_size, -1)
     rhand_pose = smplx.right_hand_pose.expand(batch_size, -1)
-    leye_pose = smplx.leye_pose.expand(batch_size, -1)
-    reye_pose = smplx.reye_pose.expand(batch_size, -1)
+    # leye_pose = smplx.leye_pose.expand(batch_size, -1)
+    # reye_pose = smplx.reye_pose.expand(batch_size, -1)
     output = smplx.forward(
             betas=shape,
             jaw_pose=jaw_pose,
@@ -829,7 +829,7 @@ def main_daviad(name):
     ]).to(device)
     with torch.no_grad():
         mesh_gt = model(None, dcoords=coords, dfeats=feats, training=False, mask=sdf_mask)
-        mesh2smplx(name, mesh_gt)
+        mesh2smplx(name, mesh_gt, output_dir='outputs')
         z_mean = mesh_gt.vertices[..., -1].mean().item()
         dicts_gt = render(mesh_gt, extrinsic@rotas_t, proj[0], HW=[H, W])
 
@@ -963,7 +963,7 @@ def main_daviad(name):
         #     sdf_n = torch.from_numpy(sdf_n).to(device)
         #     sdf_mask = (sdf_n == -1)
         mesh = model(None, dcoords=coords, dfeats=ff, training=True, mask=sdf_mask)
-        mesh2smplx(name, mesh)
+        mesh2smplx(name, mesh, output_dir='outputs')
         # distances, face_id, uvw = BVH.unsigned_distance(mesh.vertices, return_uvw=True)
         # dis_mask = torch.topk(distances, k=bvh_v.shape[0], largest=False)[1]
         # # dis_mask = distances < 0.005
@@ -1193,8 +1193,8 @@ def main_new(name):
     batch_size = body_pose.shape[0]
     lhand_pose = smplx.left_hand_pose.expand(batch_size, -1)
     rhand_pose = smplx.right_hand_pose.expand(batch_size, -1)
-    leye_pose = smplx.leye_pose.expand(batch_size, -1)
-    reye_pose = smplx.reye_pose.expand(batch_size, -1)
+    # leye_pose = smplx.leye_pose.expand(batch_size, -1)
+    # reye_pose = smplx.reye_pose.expand(batch_size, -1)
     output = smplx.forward(
             betas=shape,
             jaw_pose=jaw_pose,
@@ -1513,8 +1513,8 @@ def smplx2mesh(name):
     batch_size = body_pose.shape[0]
     lhand_pose = smplx.left_hand_pose.expand(batch_size, -1)
     rhand_pose = smplx.right_hand_pose.expand(batch_size, -1)
-    leye_pose = smplx.leye_pose.expand(batch_size, -1)
-    reye_pose = smplx.reye_pose.expand(batch_size, -1)
+    # leye_pose = smplx.leye_pose.expand(batch_size, -1)
+    # reye_pose = smplx.reye_pose.expand(batch_size, -1)
     output = smplx.forward(
         betas=shape,
         jaw_pose=jaw_pose,
@@ -1555,6 +1555,8 @@ def smplx2mesh(name):
 
 
 def bind_no_eye(name, mesh=None, mouth=False):
+
+
     from trellis.representations.mesh import SparseFeatures2Mesh
     model = SparseFeatures2Mesh(res=256, use_color=True)
     coords = torch.load(f'{OUTPUT_PATH}/{name}/slats/coords_0_new.pt').to(device)
@@ -1562,7 +1564,7 @@ def bind_no_eye(name, mesh=None, mouth=False):
     if mouth:
         feats_n = torch.load(f'{OUTPUT_PATH}/{name}/params/delta_geo_mouth_new.pt').to(device)
     else:
-        feats_n = torch.load(f'{OUTPUT_PATH}/{name}/params/delta_geo_new.pt').to(device)
+        feats_n = torch.load(f'{OUTPUT_PATH}/{name}/params/{pt_name}.pt').to(device)
 
 
     # smplx = trimesh.load(f'../../output/{name}/objects/smplx.obj')
@@ -1607,7 +1609,8 @@ def bind_no_eye(name, mesh=None, mouth=False):
         print(output.v_p.shape)
     v_p = output.v_p.to(device)
     # v_p = (v_p / 256) - 0.5
-    BVH = cubvh.cuBVH(torch.from_numpy(smplx.vertices).to(device), torch.from_numpy(smplx.faces).to(device=device, dtype=torch.int32))
+    v_bvh, f_bvh = densify(smplx.vertices, smplx.faces)
+    BVH = cubvh.cuBVH(torch.from_numpy(v_bvh).to(device), torch.from_numpy(f_bvh).to(device=device, dtype=torch.int32))
     distance, face_id, uvw = BVH.unsigned_distance(v_p, return_uvw=True)
     # np.savez(f'../../output/{name}/slats/motion_sdf.npz', face_id=face_id.detach().cpu().numpy(), uvw=uvw.detach().cpu().numpy())
     np.savez(f'{OUTPUT_PATH}/{name}/slats/motion_sdf.npz', face_id=face_id.detach().cpu().numpy(), uvw=uvw.detach().cpu().numpy())
@@ -1630,10 +1633,241 @@ def filter_z(mesh, mean):
     return new_vers, new_faces
 
 
+def boundary_smooth_loss(boundary_points):
+    """
+    boundary_points: [N, 3] 有序的边界点 loop
+    """
+    # 1. 构建前后邻居
+    # roll(-1) 把数组左移，得到 P_{i+1}
+    # roll(1) 把数组右移，得到 P_{i-1}
+    next_pts = torch.roll(boundary_points, shifts=-1, dims=0)
+    prev_pts = torch.roll(boundary_points, shifts=1, dims=0)
+    
+    # 2. 目标位置是邻居的中点
+    target_pos = (next_pts + prev_pts) / 2.0
+    
+    # 3. Loss
+    loss = torch.nn.functional.mse_loss(boundary_points, target_pos)
+    
+    return loss
+
+
+def get_boundary_edges(faces):
+    """
+    找出只出现一次的边 (边界边)。
+    faces: [F, 3] LongTensor
+    返回: boundary_edges [N_boundary, 2]
+    """
+    # 1. 把所有三角形的边拆出来 (v0-v1, v1-v2, v2-v0)
+    # 也就是把 [F, 3] 变成 [3F, 2]
+    edges = torch.cat([
+        faces[:, [0, 1]],
+        faces[:, [1, 2]],
+        faces[:, [2, 0]]
+    ], dim=0)
+    
+    # 2. 排序，保证 (0, 1) 和 (1, 0) 是一样的
+    edges, _ = torch.sort(edges, dim=1)
+    
+    # 3. 统计每条边出现的次数
+    # unique_edges: 唯一的边
+    # counts: 每条边出现的次数
+    unique_edges, counts = torch.unique(edges, return_counts=True, dim=0)
+    
+    # 4. 只保留出现次数为 1 的边 (这就是边界！)
+    boundary_edges = unique_edges[counts == 1]
+    
+    return boundary_edges
+
+def boundary_length_loss(verts, faces):
+    # 1. 获取边界边索引 [N, 2]
+    # 注意：如果拓扑结构不变，这一步可以在循环外预计算一次
+    b_edges = get_boundary_edges(faces) 
+    
+    if b_edges.shape[0] == 0:
+        return torch.tensor(0.0).to(verts.device)
+    
+    # 2. 获取端点坐标
+    v0 = verts[b_edges[:, 0]]
+    v1 = verts[b_edges[:, 1]]
+    
+    # 3. 计算边长平方
+    # 让所有边界边尽可能短 -> 就像拉紧橡皮筋 -> 锯齿被拉直
+    loss = torch.sum((v0 - v1) ** 2)
+    
+    return loss
+
+def boundary_smoothness_loss_approx(verts, faces):
+    """
+    近似的边界平滑 Loss (1D Laplacian)。
+    让边界上的每个点，尽可能位于其“边界邻居”的中心。
+    这会消除锯齿（高频抖动），使边缘变得圆滑，比单纯的边长 Loss 更好（不会过度收缩）。
+    """
+    
+    # -----------------------------------------------------------
+    # 1. 提取边界边 (Boundary Edges)
+    # -----------------------------------------------------------
+    # 构造所有边: [F, 3] -> [3F, 2]
+    # edges 包含 (v0,v1), (v1,v2), (v2,v0)
+    all_edges = torch.cat([
+        faces[:, [0, 1]],
+        faces[:, [1, 2]],
+        faces[:, [2, 0]]
+    ], dim=0)
+    
+    # 排序边索引，确保 (u, v) 和 (v, u) 被视为同一条边
+    all_edges_sorted, _ = torch.sort(all_edges, dim=1)
+    
+    # 统计每条边出现的次数
+    unique_edges, counts = torch.unique(all_edges_sorted, return_counts=True, dim=0)
+    
+    # 边界边只出现 1 次
+    # boundary_edges: [E_b, 2]
+    boundary_edges = unique_edges[counts == 1]
+    
+    if boundary_edges.shape[0] == 0:
+        return torch.tensor(0.0, device=verts.device, requires_grad=True)
+
+    # -----------------------------------------------------------
+    # 2. 构建边界邻接关系 (无需排序链表，利用 index_add)
+    # -----------------------------------------------------------
+    
+    # 我们需要计算每个边界点的“边界邻居中心” (Centroid of boundary neighbors)
+    # Target_Pos[i] = Sum(Neighbors_of_i) / Degree_of_i
+    
+    # 初始化累加器
+    num_verts = verts.shape[0]
+    neighbor_sum = torch.zeros_like(verts) # [V, 3]
+    degree = torch.zeros((num_verts, 1), device=verts.device) # [V, 1]
+    
+    # 获取边界边的两个端点索引
+    u = boundary_edges[:, 0]
+    v = boundary_edges[:, 1]
+    
+    # 获取端点坐标
+    p_u = verts[u]
+    p_v = verts[v]
+    
+    # 把 v 的坐标加到 u 的邻居和里
+    neighbor_sum.index_add_(0, u, p_v)
+    degree.index_add_(0, u, torch.ones_like(degree[u]))
+    
+    # 把 u 的坐标加到 v 的邻居和里
+    neighbor_sum.index_add_(0, v, p_u)
+    degree.index_add_(0, v, torch.ones_like(degree[v]))
+    
+    # -----------------------------------------------------------
+    # 3. 计算 Loss (Uniform 1D Laplacian)
+    # -----------------------------------------------------------
+    
+    # 只取那些度数 > 0 的点（也就是边界点）
+    # 通常边界点的度数应该是 2（连接前后两个点）。
+    # 如果度数不是 2，说明拓扑比较复杂（8字形或非流形），但平均值逻辑依然有效。
+    mask = degree.squeeze() > 0
+    
+    # 计算目标位置 (邻居的平均值)
+    # 加上 1e-6 防止除以 0
+    target_pos = neighbor_sum[mask] / (degree[mask] + 1e-6)
+    
+    # 当前位置
+    current_pos = verts[mask]
+    
+    # Loss = || P_current - P_target ||^2
+    # 这就是标准的 Laplacian Smoothing，但是只作用在边界线上
+    loss = torch.nn.functional.mse_loss(current_pos, target_pos)
+    
+    return loss
+
+
+
+
+def inner_hole_smooth_loss(verts, full_faces, ring_mask_indices):
+    """
+    只针对 Mesh 内部挖空的洞（内圈）进行平滑。
+    利用“外圈是连接的，内圈是断开的”这一拓扑特性。
+    
+    verts: [V, 3] 全局顶点
+    full_faces: [F, 3] 全局面索引 (必须包含环和周围的连接面)
+    ring_mask_indices: [M] 属于这个环区域的顶点索引 (LongTensor)
+    """
+    
+    # -----------------------------------------------------------
+    # 1. 寻找全网格的边界边 (Global Boundary Edges)
+    # -----------------------------------------------------------
+    # 注意：连接处（外圈）的边因为被共用，count 会是 2，会被自动过滤掉。
+    # 只有真正的孔洞边缘，count 才是 1。
+    
+    all_edges = torch.cat([
+        full_faces[:, [0, 1]],
+        full_faces[:, [1, 2]],
+        full_faces[:, [2, 0]]
+    ], dim=0)
+    
+    # 排序并去重
+    all_edges_sorted, _ = torch.sort(all_edges, dim=1)
+    unique_edges, counts = torch.unique(all_edges_sorted, return_counts=True, dim=0)
+    
+    # 得到所有的拓扑边界
+    global_boundary_edges = unique_edges[counts == 1] # [E_b, 2]
+    
+    if global_boundary_edges.shape[0] == 0:
+        return torch.tensor(0.0, device=verts.device)
+
+    # -----------------------------------------------------------
+    # 2. 用 Ring Mask 进行过滤 (Double Check)
+    # -----------------------------------------------------------
+    # 虽然理论上外圈已经被过滤了，但如果 Mesh 在很远的地方还有边缘，
+    # 我们需要用 mask 确保只取“这个环”的内圈。
+    
+    # 创建一个布尔 mask
+    is_in_ring = torch.zeros(verts.shape[0], dtype=torch.bool, device=verts.device)
+    is_in_ring[ring_mask_indices] = True
+    
+    # 检查边的两个端点是否都在 ring mask 里
+    # 只有端点都在 mask 里的边界边，才是我们想要的“内圈边”
+    u = global_boundary_edges[:, 0]
+    v = global_boundary_edges[:, 1]
+    
+    mask_edges = is_in_ring[u] & is_in_ring[v]
+    
+    # 最终的目标边：内圈边
+    target_edges = global_boundary_edges[mask_edges]
+    
+    if target_edges.shape[0] == 0:
+        return torch.tensor(0.0, device=verts.device)
+
+    # -----------------------------------------------------------
+    # 3. 计算 1D 平滑 Loss (只针对 target_edges)
+    # -----------------------------------------------------------
+    # 下面是标准的 graph laplacian 逻辑，但只用 target_edges 构建图
+    
+    u_target = target_edges[:, 0]
+    v_target = target_edges[:, 1]
+    
+    neighbor_sum = torch.zeros_like(verts)
+    degree = torch.zeros((verts.shape[0], 1), device=verts.device)
+    
+    # 累加坐标
+    neighbor_sum.index_add_(0, u_target, verts[v_target])
+    degree.index_add_(0, u_target, torch.ones_like(degree[u_target]))
+    
+    neighbor_sum.index_add_(0, v_target, verts[u_target])
+    degree.index_add_(0, v_target, torch.ones_like(degree[v_target]))
+    
+    # 计算 Loss
+    # 只计算 degree > 0 的点（即内圈点）
+    active_mask = degree.squeeze() > 0
+    
+    target_pos = neighbor_sum[active_mask] / (degree[active_mask] + 1e-6)
+    current_pos = verts[active_mask]
+    
+    loss = torch.nn.functional.mse_loss(current_pos, target_pos)
+    
+    return loss
 
 def mouth(name):
     
-
+    # pt_name = 'delta_geo_show_ffhq'
     from src.networks_bak import myNet
     training_net = myNet()
     training_net.to(device)
@@ -1651,8 +1885,8 @@ def mouth(name):
     batch_size = body_pose.shape[0]
     lhand_pose = smplx.left_hand_pose.expand(batch_size, -1)
     rhand_pose = smplx.right_hand_pose.expand(batch_size, -1)
-    leye_pose = smplx.leye_pose.expand(batch_size, -1)
-    reye_pose = smplx.reye_pose.expand(batch_size, -1)
+    # leye_pose = smplx.leye_pose.expand(batch_size, -1)
+    # reye_pose = smplx.reye_pose.expand(batch_size, -1)
 
     shape1 = shape[0:1].clone()
     jaw_pose1 = torch.tensor(
@@ -1701,7 +1935,7 @@ def mouth(name):
     vv = smplx_v[-1]
     import utils3d
     from utils3d.torch import matrix_to_quaternion, quaternion_to_matrix
-    s, R, T, k, t = mesh2smplx(name, return_=True)
+    s, R, T, k, t = mesh2smplx(name, return_=True, output_dir=OUTPUT_PATH)
     s = s.cpu().numpy()
     # R = R.cpu().numpy()
     T = T.cpu().numpy()
@@ -1738,8 +1972,11 @@ def mouth(name):
     index = output.vertices.shape[1] - 1092
     mask = ~(smplx.faces > index).any(axis=-1)
     ff = smplx.faces
-    motion_id = ff[face_id]
-    deformation = (smplx_v[-1:] - smplx_v[0:1])
+    v_last, new_ff = densify(smplx_v[-1], smplx.faces)
+    motion_id = new_ff[face_id]
+
+    v_0, _ = densify(smplx_v[0], smplx.faces) 
+    deformation = (v_last[None] - v_0[None])
     deformation = deformation[:, motion_id, :]
     trans = np.load(f'{OUTPUT_PATH}/{name}/params/trans.npz')
     kt = np.load(f'{OUTPUT_PATH}/{name}/params/kt.npz')
@@ -1788,7 +2025,7 @@ def mouth(name):
     print(coord.shape)
     print(coord[:5])
     dis_c, face_id_c, uvw_c = BVH_n.unsigned_distance(coord[..., 1:], True)
-    mmma = dis_c < 0.08
+    mmma = dis_c < 0.04
     v_show = coord[..., 1:][mmma].cpu().numpy()
     utils3d.io.write_ply('hello.ply', v_show)
     # print(v_show.shape)
@@ -1812,21 +2049,21 @@ def mouth(name):
     
     feats_n = torch.load(f'{OUTPUT_PATH}/{name}/slats/feats_0_new.pt').to(device)
 
-    feats = torch.load(f'{OUTPUT_PATH}/{name}/params/delta_geo_new.pt').to(device)
+    feats = torch.load(f'{OUTPUT_PATH}/{name}/params/{pt_name}.pt').to(device)
     model = SparseFeatures2Mesh(res=256)
 
 
     fp16_scale_growth = 0.0001
     log_scale = 20
-    grad_clip = AdaptiveGradClipper(max_norm=0.5, clip_percentile=95)
+    grad_clip = AdaptiveGradClipper(max_norm=1, clip_percentile=95)
     model_params = [p for p in training_net.parameters() if p.requires_grad]
     master_params = make_master_params(model_params)
     optimizer = torch.optim.AdamW(master_params, lr=5e-4, weight_decay=0.0)
     scheduler = StepLR(optimizer, step_size=50, gamma=0.9)
 
     delta = torch.zeros((feats.shape[0], 53)).float().to(device).requires_grad_(True)
-    optimizer_d = torch.optim.Adam([delta], lr=5e-4)
-    scheduler_d = StepLR(optimizer_d, step_size=100, gamma=0.9)
+    optimizer_d = torch.optim.Adam([delta], lr=5e-3)
+    scheduler_d = StepLR(optimizer_d, step_size=50, gamma=0.9)
 
     with torch.no_grad():
         temp_d = model(None, dcoords=coords, dfeats=feats_n, debug=True)
@@ -1964,7 +2201,7 @@ def mouth(name):
     coords = torch.load(f'{OUTPUT_PATH}/{name}/slats/coords_0_new.pt').to(device)
     coords = torch.load(f'{OUTPUT_PATH}/{name}/slats/coords_0_new.pt').to(device)
     feats_n = torch.load(f'{OUTPUT_PATH}/{name}/slats/feats_0_new.pt').to(device)
-    feats = torch.load(f'{OUTPUT_PATH}/{name}/params/delta_geo_new.pt').to(device)
+    feats = torch.load(f'{OUTPUT_PATH}/{name}/params/{pt_name}.pt').to(device)
     input = sp.SparseTensor(
         coords=coords,
         feats=feats
@@ -1973,7 +2210,13 @@ def mouth(name):
     face_id = motion['face_id']
     uvw = motion['uvw']
 
-    deformation = (smplx_v[-1:] - smplx_v[0:1])
+    v_last, new_ff = densify(smplx_v[-1], smplx.faces)
+    # motion_id = new_ff[face_id]
+
+    v_0, _ = densify(smplx_v[0], smplx.faces) 
+    deformation = (v_last[None] - v_0[None])
+
+    # deformation = (v_last[None] - v_0[None])
     deformation = deformation[:, motion_id, :]
     deformation = np.einsum('bkij, bki->bkj', deformation, np.tile(uvw, (deformation.shape[0], 1, 1)))
 
@@ -2030,7 +2273,7 @@ def mouth(name):
         coords=coarse_coords.to(dtype=torch.int32),
         feats=coarse_feats
     )
-    iters = 200
+    iters = 400
 
     
 
@@ -2045,33 +2288,55 @@ def mouth(name):
 
     with torch.no_grad():
         mesh_gt = model(None, dcoords=coords, dfeats=feats, v_a=torch.from_numpy(deformation[-1]).to(dtype=torch.float32, device=device), mask=sdf_mask, n_coords=n_coords, marching_mask=m_mask, indices=indices)
-        mesh2smplx(name, mesh_gt)
+        mesh2smplx(name, mesh_gt, output_dir=OUTPUT_PATH)
         z_mean = mesh_gt.vertices[..., -1].mean().item()
         dicts_gt = render(mesh, extrinsic, proj[0], HW=[H, W])
 
     smplx_mesh = trimesh.Trimesh(vertices=v, faces=f)
     my_mesh = trimesh.Trimesh(vertices=mesh_gt.vertices.detach().cpu().numpy(), faces=mesh.faces.detach().cpu().numpy())
-    # smplx_mesh.export(f'{OUTPUT_PATH}/{name}/objects/smplx_mouth_use.obj')
-    # my_mesh.export(f'{OUTPUT_PATH}/{name}/objects/my_mouth_use.obj')
+    smplx_mesh.export(f'{OUTPUT_PATH}/{name}/objects/smplx_mouth_use.obj')
+    my_mesh.export(f'{OUTPUT_PATH}/{name}/objects/my_mouth_use.obj')
     BVH_op = cubvh.cuBVH(smplx_m.vertices, smplx_m.faces.to(torch.int32))
     v_sm = smplx_m.vertices.clone()
     v_sm[..., 2] = 0
     BVH_mm = cubvh.cuBVH(v_sm, smplx_m.faces.to(torch.int32))
-    distance, face_id, uvw = BVH_op.unsigned_distance(mesh_gt.vertices, return_uvw=True)
-    x_gt = mesh_gt.vertices.clone()
-    x_gt[..., 2] = 0
-    distance1, _, _ = BVH_mm.unsigned_distance(x_gt, return_uvw=True)
-    msk = distance < 0.02
-    msk1 = distance1 < 0.005
-    msk = (msk & msk1)
-    out_p = mesh_gt.vertices[msk].detach().cpu().numpy()
-    utils3d.io.write_ply(f'{OUTPUT_PATH}/{name}/objects/my_mouth.ply', out_p)
+    # distance, face_id, uvw = BVH_op.unsigned_distance(mesh_gt.vertices, return_uvw=True)
+    # x_gt = mesh_gt.vertices.clone()
+    # x_gt[..., 2] = 0
+    # distance1, _, _ = BVH_mm.unsigned_distance(x_gt, return_uvw=True)
+    # msk = distance < 0.02
+    # msk1 = distance1 < 0.0025
+    # msk = (msk & msk1)
 
-    delta_mesh = torch.zeros((msk.shape[0], 3)).to(device).requires_grad_(True)
-    optimizer_m = torch.optim.Adam([delta_mesh], lr=5e-4)
-    scheduler_m = StepLR(optimizer_m, step_size=100, gamma=0.9)
+    # ff = face_id[msk]
+    # uv = uvw[msk]
+    # v_uv = smplx_m.vertices[smplx_m.faces[ff]]
+    # v_target = torch.einsum('bij, bi->bj', v_uv, uv)
 
-    exit()
+    # out_p = mesh_gt.vertices[msk].detach().cpu().numpy()
+    # utils3d.io.write_ply(f'{OUTPUT_PATH}/{name}/objects/my_mouth.ply', out_p)
+
+    # delta_mesh = torch.zeros((out_p.shape[0], 3)).to(device).requires_grad_(True)
+    # optimizer_m = torch.optim.Adam([delta_mesh], lr=5e-4)
+    # scheduler_m = StepLR(optimizer_m, step_size=100, gamma=0.9)
+    # print(v_target.shape, msk.shape)
+    from pytorch3d.loss import chamfer_distance
+    # for iter in range(200):
+    #     optimizer_m.zero_grad()
+    #     # print(mesh_gt.vertices[msk].shape)
+    #     # print(delta.shape)
+    #     # print(v_target.shape)
+    #     loss = chamfer_distance((mesh_gt.vertices[msk] + delta_mesh)[None], v_target[None])[0]
+    #     print(loss)
+    #     print(loss)
+    #     loss.backward()
+    #     optimizer_m.step()
+    
+    # mesh_gt.vertices[msk] += delta_mesh
+    # trimesh.Trimesh(vertices=mesh_gt.vertices.detach().cpu().numpy(), faces=mesh_gt.faces.detach().cpu().numpy()).export(f'{OUTPUT_PATH}/{name}/objects/optim_mouse.obj')
+
+
+    # exit()
     
     
     for epoch in range(iters + 1):
@@ -2091,11 +2356,22 @@ def mouth(name):
         # ff[~mmma] = feats[~mmma].detach()
         mesh = model(None, dcoords=coords, dfeats=ff, v_a=torch.from_numpy(deformation[-1]).to(dtype=torch.float32, device=device), mask=sdf_mask, n_coords=n_coords, marching_mask=m_mask, indices=indices)
 
-        mesh2smplx(name, mesh)
+        mesh2smplx(name, mesh, output_dir=OUTPUT_PATH)
         new_v, new_f = filter_z(mesh, mean_z)
         mesh = MeshExtractResult(vertices=new_v, faces=new_f)
         dicts = render(mesh, extrinsic, proj[0], HW=[H, W])
 
+
+        distance, face_id, uvw = BVH_op.unsigned_distance(mesh.vertices.detach(), return_uvw=True)
+        x_gt = mesh.vertices.detach().clone()
+        x_gt[..., 2] = 0
+        distance1, _, _ = BVH_mm.unsigned_distance(x_gt, return_uvw=True)
+        msk = distance < 0.02
+        msk1 = distance1 < 0.0025
+        msk = (msk & msk1)
+
+        face_verts_mask = msk[mesh.faces]
+        face_mask = face_verts_mask.all(dim=1)
         # perceptual_loss_new = 10 * loss_recon(dicts['normal'][0] * local_mask_dilated[0, None], smplx_dicts_local['normal'][0] * local_mask_dilated[0, None]) + 5 * loss_recon(dicts['normal'][0] * (1 - local_mask[0, None]), (1 - local_mask[0, None]) * dicts_gt_['normal'][0])
         perceptual_loss = loss_recon(dicts['normal'] * local_mask_dilated[None], smplx_dicts['normal'] * local_mask_dilated[None], lambda_ssim=8)
         pred = torch.nn.functional.normalize(dicts['normal'], dim=0, eps=1e-6)
@@ -2111,11 +2387,36 @@ def mouth(name):
         # exit()
         # mask_loss = 5 * BCE(dicts['mask'] * local_mask_filled, smplx_dicts['mask'] * local_mask_filled) + 0.5 * dice_loss(dicts['mask'] * local_mask_filled, smplx_dicts['mask'] * local_mask_filled)
         # loss = perceptual_loss + 0.5 * depth_loss + 0.5 * mask_loss + perceptual_loss_local
-        loss =  perceptual_loss + 8 * perceptual_loss_local + loss_normal
+        # reg_loss = boundary_smooth_loss(mesh.vertices[msk])
+
+        # cf_loss, _ = chamfer_distance(mesh.vertices[msk][None], smplx_m.vertices[None])
+        # loss =  perceptual_loss + 1 * perceptual_loss_local + 5 * loss_normal + 2e3 * cf_loss + 1e3 * reg_loss
+        mesh_ = Meshes(verts=mesh.vertices[None], faces=mesh.faces[face_mask][None])
+
+        # 2. 计算 Loss
+        # # method="uniform": 简单的邻居平均 (适合一般去噪)
+        lap_loss = mesh_laplacian_smoothing(mesh_, method="uniform")
+        lap_loss = mesh_normal_consistency(mesh_)
+        loss_bound_smooth = inner_hole_smooth_loss(mesh.vertices, mesh.faces, msk)
+        if epoch < 200:
+            lambda_bound = 0
+            lambda_bound_smooth = 1.0
+            lambda_perp = 4
+            lambda_lap = 0.
+        else:
+            lambda_bound = 0
+            lambda_perp = 1.5
+            lambda_bound_smooth = 1e6
+            lambda_lap = 1e3
+
+        bound_loss = boundary_length_loss(mesh.vertices, mesh.faces[face_mask])
+        loss =  lambda_perp * perceptual_loss + 10 * perceptual_loss_local + 5 * loss_normal + lambda_bound * bound_loss + lambda_bound_smooth * loss_bound_smooth + 0.1 * lap_loss
+
 
         loss.backward()
         # print(delta.grad)
         grad_norm = grad_clip(delta)
+        scheduler_d.step()
 
         optimizer_d.step()
 
@@ -2139,11 +2440,14 @@ def mouth(name):
         # loss.backward()
         # grad_norm = grad_clip(delta)
         # optimizer.step()
-        print(f'epoch: {epoch}, loss: {loss}, perceptual_loss: {perceptual_loss}, depth_loss: {depth_loss}, normal: {loss_normal}')
+        print(f'epoch: {epoch}, loss: {loss}, perceptual_loss: {perceptual_loss}, depth_loss: {depth_loss}, normal: {loss_normal}, bound_loss: {bound_loss}, loss_bound_smooth: {loss_bound_smooth}, lap_loss: {lap_loss}')
 
         if epoch == iters:
             # mesh.vertices[..., -1:] += z_mean
             # trimesh.Trimesh(vertices=mesh.vertices.detach().cpu().numpy(), faces=mesh.faces.cpu().numpy()).export(f'{OUTPUT_PATH}/{name}/objects/single_n.obj')
+            with torch.no_grad():
+                mesh = model(None, dcoords=coords, dfeats=ff, mask=sdf_mask, marching_mask=m_mask, indices=indices)
+                trimesh.Trimesh(vertices=mesh.vertices.detach().cpu().numpy(), faces=mesh.faces.detach().cpu().numpy()).export(f'{OUTPUT_PATH}/{name}/params/final_mesh.obj')
             torch.save(ff, f'{OUTPUT_PATH}/{name}/params/delta_geo_mouth_new.pt')
             # cv2.imwrite(f'exp/{mname}/objects/dd.png', I_dep.detach().cpu().numpy()[..., ::-1] * 255.)
             # cv2.imwrite(f'exp/{mname}/objects/nn.png', I_nor.permute(1, 2, 0).detach().cpu().numpy()[..., ::-1] * 255.)
@@ -2183,8 +2487,8 @@ def process(name):
     batch_size = body_pose.shape[0]
     lhand_pose = smplx.left_hand_pose.expand(batch_size, -1)
     rhand_pose = smplx.right_hand_pose.expand(batch_size, -1)
-    leye_pose = smplx.leye_pose.expand(batch_size, -1)
-    reye_pose = smplx.reye_pose.expand(batch_size, -1)
+    # leye_pose = smplx.leye_pose.expand(batch_size, -1)
+    # reye_pose = smplx.reye_pose.expand(batch_size, -1)
 
     shape1 = shape[0:1].clone()
     jaw_pose1 = torch.tensor(
@@ -2257,8 +2561,15 @@ def process(name):
     index = output.vertices.shape[1] - 1092
     mask = ~(smplx.faces > index).any(axis=-1)
     ff = smplx.faces
-    motion_id = ff[face_id]
-    deformation = (smplx_v[-1:] - smplx_v[0:1])
+
+
+    v_last, new_ff = densify(smplx_v[-1], smplx.faces)
+    motion_id = new_ff[face_id]
+    v_0, _ = densify(smplx_v[0], smplx.faces) 
+    deformation = (v_last[None] - v_0[None])
+
+    # motion_id = ff[face_id]
+    # deformation = (smplx_v[-1:] - smplx_v[0:1])
     deformation = deformation[:, motion_id, :]
     trans = np.load(f'{OUTPUT_PATH}/{name}/params/trans.npz')
     kt = np.load(f'{OUTPUT_PATH}/{name}/params/kt.npz')
@@ -2382,8 +2693,27 @@ ffhq = ['00000-00320.png', '00000-00502.png', '00000-00454.png', '00000-00447.pn
 
 ffhq = ['00000-00320.png', '00000-00502.png', '00000-00454.png' , '00000-00437.png', '00000-00247.png', '00000-00114.png', '00000-00012.png', '00000-00145.png']
 
+pt_name = 'delta_geo_show_ffhq'
+import subprocess
+
 if __name__ == '__main__':
-    main('celebvhq_vids_1CKEXvHN9es_2.mp4')
+    # main_daviad('007_21')
+    # exit()
+    # main('nersemble_vids_315.mp4')
+    # exit()
+    name = 'pipe'
+    args = ['ln', '-sfn', f'../{OUTPUT_PATH}/{name}', 'src/debug']
+    subprocess.run(args)
+
+    # main(name)
+    smplx2mesh(name)
+    bind_no_eye(name)
+    mouth(name)
+    bind_no_eye(name, mouth=True)
+    process(name)
+    exit()
+    name = 'nersemble_vids_326.mp4'
+    
     # for name in ffhq:
     #     main('00000-00502.png')
     exit()

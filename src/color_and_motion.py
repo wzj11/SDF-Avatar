@@ -749,7 +749,7 @@ def motion(name):
     # feats = torch.load(f'src/motion_sdf/delta.pt').to(device)
     # feats = torch.load(f'src/tutils/delta_with_color.pt').to(device)
     feats = torch.load(f'{OUTPUT_PATH}/{name}/params/delta_geo_mouth_new.pt').to(device)
-    feats_g = torch.load(f'{OUTPUT_PATH}/{name}/params/delta_geo_new.pt').to(device)
+    feats_g = torch.load(f'{OUTPUT_PATH}/{name}/params/{pt_name}.pt').to(device)
 
     input = sp.SparseTensor(
         coords=coords,
@@ -781,10 +781,18 @@ def motion(name):
             transl=transl,
             with_rott_return=True
         )
+    smplx_v = output['vertices'].squeeze().detach().cpu().numpy()
     index = output.vertices.shape[1] - 1092
     mask = ~(smplx.faces > index).any(axis=-1)
     ff = smplx.faces
-    motion_id = ff[face_id]
+
+    _, new_ff = densify(smplx_v[-1], smplx.faces)
+    motion_id = new_ff[face_id]
+
+    # v_0, _ = densify(smplx_v[0], smplx.faces) 
+    # deformation = (v_last[None] - v_0[None])
+
+    # motion_id = ff[face_id]
     # motion_id = smplx.faces[face_id]
     # pp = output.vertices[0, :-1092].detach().cpu().numpy()
     # trimesh.Trimesh(vertices=output.vertices[0].detach().cpu().numpy(), faces=smplx.faces).export('src/sm0.obj')
@@ -792,20 +800,21 @@ def motion(name):
     
     proj = get_ndc_proj_matrix(cam_para[0:1], [H, W])
 
-    smplx_v = output['vertices'].squeeze().detach().cpu().numpy()
+    
     # smplx_v[-1092:, 2] -= 0.002
 
     # 1012
     # deformation = smplx_v - smplx_v[0:1] # cpu
-    deformation = (smplx_v[:150] - smplx_v[0:1])
-    # deformation = (smplx_v - smplx_v[0:1])
-    # print(deformation.shape)
-    # print(motion_id.shape)
-    deformation = deformation[:, motion_id, :] # (B ,F, 3, 3) # cpu
+    # deformation = (smplx_v[:150] - smplx_v[0:1])
+    # # deformation = (smplx_v - smplx_v[0:1])
+    # # print(deformation.shape)
+    # # print(motion_id.shape)
+    # deformation = deformation[:, motion_id, :] # (B ,F, 3, 3) # cpu
+    # deformation = np.einsum('bkij, bki->bkj', deformation, np.tile(uvw, (deformation.shape[0], 1, 1)))
     print(motion_id.max(), 'wzj')
     # print(deformation.shape)
     # exit()
-    deformation = np.einsum('bkij, bki->bkj', deformation, np.tile(uvw, (deformation.shape[0], 1, 1)))
+    
 
     trans = np.load(f'{OUTPUT_PATH}/{name}/params/trans.npz')
     kt = np.load(f'{OUTPUT_PATH}/{name}/params/kt.npz')
@@ -817,7 +826,7 @@ def motion(name):
     k = torch.from_numpy(k).to(device)
     t = torch.from_numpy(t).to(device)
     # R = quaternion_to_matrix(torch.from_numpy(R).to(device))
-    deformation = s.cpu().numpy() * k.cpu().numpy() * deformation @ R[0].transpose(-2, -1).cpu().numpy()
+    # deformation = s.cpu().numpy() * k.cpu().numpy() * deformation @ R[0].transpose(-2, -1).cpu().numpy()
     extrinsic = torch.tensor(
             [
                 [1., 0., 0., 0.],
@@ -867,8 +876,9 @@ def motion(name):
     gm.compute_canonical_teeth(shape[0:1])
     teeth, teeth_faces = gm.compute_com_verts(frame_dicts, motion=True)
     indices = torch.load(f'{OUTPUT_PATH}/{name}/params/indices.pt')
+    v_0, _ = densify(smplx_v[0], smplx.faces) 
 
-    for num in tqdm(range(deformation.shape[0]), desc='render'):
+    for num in tqdm(range(150), desc='render'):
         # mesh = model(None, dcoords=coords, dfeats=feats_g, mask=sdf_mask)
         # mesh.vertices = (mesh.vertices - T) @ R[0] / s[0]
         # mesh.vertices = (mesh.vertices - t) / k
@@ -883,47 +893,60 @@ def motion(name):
         # if num != 1 and num != 70:
         #     continue
         # mesh = model(input, v_a=torch.from_numpy(deformation[num]).to(dtype=torch.float32, device=device))
-        # mesh = model(None, dcoords=coords, dfeats=feats, v_a=torch.from_numpy(deformation[num]).to(dtype=torch.float32, device=device), mask=sdf_mask, n_coords=n_coords, marching_mask=m_mask, indices=indices)
-        mesh = model(None, dcoords=coords, dfeats=feats, v_a=torch.from_numpy(deformation[num]).to(dtype=torch.float32, device=device), mask=sdf_mask, n_coords=n_coords)
+        # 
+        v_last, _ = densify(smplx_v[num], smplx.faces)
+        # motion_id = new_ff[face_id]
+
+        deformation = (v_last[None] - v_0[None])
+        # deformation = (smplx_v[:150] - smplx_v[0:1])
+        # deformation = (smplx_v - smplx_v[0:1])
+        # print(deformation.shape)
+        # print(motion_id.shape)
+        deformation = deformation[:, motion_id, :] # (B ,F, 3, 3) # cpu
+        deformation = np.einsum('bkij, bki->bkj', deformation, np.tile(uvw, (deformation.shape[0], 1, 1)))
+        deformation = s.cpu().numpy() * k.cpu().numpy() * deformation @ R[0].transpose(-2, -1).cpu().numpy()
+
+        mesh = model(None, dcoords=coords, dfeats=feats, v_a=torch.from_numpy(deformation[0]).to(dtype=torch.float32, device=device), mask=sdf_mask, n_coords=n_coords, marching_mask=m_mask, indices=indices)
+        # mesh = model(None, dcoords=coords, dfeats=feats, v_a=torch.from_numpy(deformation[0]).to(dtype=torch.float32, device=device), mask=sdf_mask, n_coords=n_coords)
         mesh.vertices = (mesh.vertices - T) @ R[0] / s[0]
         mesh.vertices = (mesh.vertices - t) / k
-        if num != 20:
-            continue
-        else:
-            trimesh.Trimesh(vertices=mesh.vertices.detach().cpu().numpy(), faces=mesh.faces.detach().cpu().numpy()).export(f'{OUTPUT_PATH}/{name}/objects/animation_mouth.obj')
-            exit()
-        my_vertices = torch.cat(
-            [
-                mesh.vertices,
-                output.vertices[num, -1092:],
-                teeth[num],
-            ],
-            dim=0
-        ).to(device)
-        mf = mesh.faces.new_tensor(smplx.faces[~mask])
-        mf -= mf.min()
-        mf += mesh.faces.max() + 1
-        my_faces = torch.cat(
-            [
-                mesh.faces,
-                mf
-            ],
-            dim = 0
-        )
-        mf = my_faces.new_tensor(teeth_faces[0])
-        mf -= mf.min()
-        mf += my_faces.max() + 1
-        my_faces = torch.cat(
-            [
-                my_faces,
-                mf
-            ],
-            dim=0
-        )
-        mesh = MeshExtractResult(
-            vertices=my_vertices,
-            faces=my_faces,
-        )
+        # if num != 20:
+        #     continue
+        # else:
+        #     trimesh.Trimesh(vertices=mesh.vertices.detach().cpu().numpy(), faces=mesh.faces.detach().cpu().numpy()).export(f'{OUTPUT_PATH}/{name}/objects/animation_mouth.obj')
+        #     exit()
+                # my_vertices = torch.cat(
+                #     [
+                #         mesh.vertices,
+                #         output.vertices[num, -1092:],
+                #         teeth[num],
+                #     ],
+                #     dim=0
+                # ).to(device)
+                # mf = mesh.faces.new_tensor(smplx.faces[~mask])
+                # mf -= mf.min()
+                # mf += mesh.faces.max() + 1
+                # my_faces = torch.cat(
+                #     [
+                #         mesh.faces,
+                #         mf
+                #     ],
+                #     dim = 0
+                # )
+                # mf = my_faces.new_tensor(teeth_faces[0])
+                # mf -= mf.min()
+                # mf += my_faces.max() + 1
+                # my_faces = torch.cat(
+                #     [
+                #         my_faces,
+                #         mf
+                #     ],
+                #     dim=0
+                # )
+                # mesh = MeshExtractResult(
+                #     vertices=my_vertices,
+                #     faces=my_faces,
+                # )
         # if num == 1 or num == 70:
         #     img, new_m = render_m.forward_visualization_geo(mesh.vertices[None], mesh.faces[None].int(), cam_para, [H, W])
         #     img = np.concatenate(
@@ -977,7 +1000,7 @@ def motion_color(name):
     # feats = torch.load(f'src/motion_sdf/delta.pt').to(device)
     feats_c = torch.load(f'{OUTPUT_PATH}/{name}/params/delta_with_color.pt').to(device)
     feats_e = torch.load(f'{OUTPUT_PATH}/{name}/params/delta_with_eye.pt').to(device)
-    feats = torch.load(f'{OUTPUT_PATH}/{name}/params/delta_geo.pt').to(device)
+    feats = torch.load(f'{OUTPUT_PATH}/{name}/params/{pt_name}.pt').to(device)
     input = sp.SparseTensor(
         coords=coords,
         feats=feats
@@ -1322,9 +1345,10 @@ def trellis(name):
     )
 
     cv2.imwrite(f'{OUTPUT_PATH}/{name}/compare/trellis.png', img[0])
+pt_name = 'delta_geo_show_ffhq'
 
 if __name__ == '__main__':
-    name = 'nersemble_vids_314.mp4'
+    name = 'pipe'
     motion(name)
     exit()
     # color(name)
