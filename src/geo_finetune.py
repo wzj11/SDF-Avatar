@@ -2273,7 +2273,7 @@ def mouth(name):
         coords=coarse_coords.to(dtype=torch.int32),
         feats=coarse_feats
     )
-    iters = 400
+    iters = 600
 
     
 
@@ -2398,14 +2398,14 @@ def mouth(name):
         lap_loss = mesh_laplacian_smoothing(mesh_, method="uniform")
         lap_loss = mesh_normal_consistency(mesh_)
         loss_bound_smooth = inner_hole_smooth_loss(mesh.vertices, mesh.faces, msk)
-        if epoch < 200:
+        if epoch < 100:
             lambda_bound = 0
             lambda_bound_smooth = 1.0
             lambda_perp = 4
             lambda_lap = 0.
         else:
             lambda_bound = 0
-            lambda_perp = 1.5
+            lambda_perp = 6
             lambda_bound_smooth = 1e6
             lambda_lap = 1e3
 
@@ -2693,10 +2693,37 @@ ffhq = ['00000-00320.png', '00000-00502.png', '00000-00454.png', '00000-00447.pn
 
 ffhq = ['00000-00320.png', '00000-00502.png', '00000-00454.png' , '00000-00437.png', '00000-00247.png', '00000-00114.png', '00000-00012.png', '00000-00145.png']
 
-pt_name = 'delta_geo_show_ffhq'
+pt_name = 'delta_geo_new'
 import subprocess
 
+new_list = ['030', '036', '055', '071', '074', '076', '083', '106', '112', '115', '139', '165', '188', '199', '290', '294', '307', '313', '315', '331']
+
+new_list = ['030', '036', '055', '071', '074', '076', '083', '106', '112', '115', '139', '165', '188', '199', '290', '294', '307', '313', '331']
+
 if __name__ == '__main__':
+    name = 'nersemble_vids_074.mp4'
+    smplx2mesh(name)
+    bind_no_eye(name)
+    mouth(name)
+    bind_no_eye(name, mouth=True)
+    process(name)
+    exit()
+
+
+    paths = ['nersemble_vids_' + name + '.mp4' for name in new_list]
+    for name in paths:
+    # name = 'nersemble_vids_326.mp4'
+        try:
+            print(f'processing {name}')
+            # motion(name)
+            smplx2mesh(name)
+            bind_no_eye(name)
+            mouth(name)
+            bind_no_eye(name, mouth=True)
+            process(name)
+        except Exception as e:
+            print(e)
+    exit()
     # main_daviad('007_21')
     # exit()
     # main('nersemble_vids_315.mp4')
