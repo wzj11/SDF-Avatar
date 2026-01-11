@@ -2402,11 +2402,17 @@ def mouth(name):
             lambda_bound = 0
             lambda_bound_smooth = 1.0
             lambda_perp = 4
-            lambda_lap = 1e2
-            lambda_norm = 1e1
+            lambda_lap = 1e1
+            lambda_norm = 1e-1
 
+        elif epoch < 400:
+            lambda_bound = 5e2
+            lambda_perp = 6
+            lambda_bound_smooth = 1e6
+            lambda_lap = 1e1
+            lambda_norm = 1e-1
         else:
-            lambda_bound = 1e2
+            lambda_bound = 5e2
             lambda_perp = 6
             lambda_bound_smooth = 1e6
             lambda_lap = 1e2
