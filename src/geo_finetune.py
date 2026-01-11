@@ -2273,7 +2273,7 @@ def mouth(name):
         coords=coarse_coords.to(dtype=torch.int32),
         feats=coarse_feats
     )
-    iters = 600
+    iters = 500
 
     
 
@@ -2400,8 +2400,8 @@ def mouth(name):
         loss_bound_smooth = inner_hole_smooth_loss(mesh.vertices, mesh.faces, msk)
         if epoch < 100:
             lambda_bound = 0
-            lambda_bound_smooth = 1.0
-            lambda_perp = 4
+            lambda_bound_smooth = 1e5
+            lambda_perp = 10
             lambda_lap = 1e1
             lambda_norm = 1e-1
 
@@ -2411,15 +2411,21 @@ def mouth(name):
             lambda_bound_smooth = 1e6
             lambda_lap = 1e1
             lambda_norm = 1e-1
+        elif epoch < 450:
+            lambda_bound = 5e2
+            lambda_perp = 8
+            lambda_bound_smooth = 3e6
+            lambda_lap = 1e2
+            lambda_norm = 5e1
         else:
             lambda_bound = 5e2
-            lambda_perp = 6
-            lambda_bound_smooth = 1e6
-            lambda_lap = 1e2
-            lambda_norm = 1e1
+            lambda_perp = 8
+            lambda_bound_smooth = 3e6
+            lambda_lap = 2e2
+            lambda_norm = 5e1
 
         bound_loss = boundary_length_loss(mesh.vertices, mesh.faces[face_mask])
-        loss =  lambda_perp * perceptual_loss + 10 * perceptual_loss_local + 5 * loss_normal + lambda_bound * bound_loss + lambda_bound_smooth * loss_bound_smooth + lambda_lap * lap_loss + lambda_norm * norm_loss
+        loss =  lambda_perp * perceptual_loss + 30 * perceptual_loss_local + 20 * loss_normal + lambda_bound * bound_loss + lambda_bound_smooth * loss_bound_smooth + lambda_lap * lap_loss + lambda_norm * norm_loss
 
 
         loss.backward()
