@@ -2396,21 +2396,24 @@ def mouth(name):
         # 2. 计算 Loss
         # # method="uniform": 简单的邻居平均 (适合一般去噪)
         lap_loss = mesh_laplacian_smoothing(mesh_, method="uniform")
-        lap_loss = mesh_normal_consistency(mesh_)
+        norm_loss = mesh_normal_consistency(mesh_)
         loss_bound_smooth = inner_hole_smooth_loss(mesh.vertices, mesh.faces, msk)
         if epoch < 100:
             lambda_bound = 0
             lambda_bound_smooth = 1.0
             lambda_perp = 4
-            lambda_lap = 0.
+            lambda_lap = 1e2
+            lambda_norm = 1e1
+
         else:
-            lambda_bound = 0
+            lambda_bound = 1e2
             lambda_perp = 6
             lambda_bound_smooth = 1e6
-            lambda_lap = 1e3
+            lambda_lap = 1e2
+            lambda_norm = 1e1
 
         bound_loss = boundary_length_loss(mesh.vertices, mesh.faces[face_mask])
-        loss =  lambda_perp * perceptual_loss + 10 * perceptual_loss_local + 5 * loss_normal + lambda_bound * bound_loss + lambda_bound_smooth * loss_bound_smooth + 0.1 * lap_loss
+        loss =  lambda_perp * perceptual_loss + 10 * perceptual_loss_local + 5 * loss_normal + lambda_bound * bound_loss + lambda_bound_smooth * loss_bound_smooth + lambda_lap * lap_loss + lambda_norm * norm_loss
 
 
         loss.backward()
